@@ -35,12 +35,12 @@ Before running the code, make sure you have downloaded the raw videos under ``./
         ...
     frames/
         {video1_basename}/
-            frame_count000001.jpg
-            frame_count000002.jpg
+            000001.jpg
+            000002.jpg
             ...
         {video2_basename}/
-            frame_count000001.jpg
-            frame_count000002.jpg
+            000001.jpg
+            000002.jpg
             ...
         ...
 ```
@@ -132,6 +132,7 @@ url={https://openreview.net/forum?id=Qla5PqFL0s}
 }
 
 ```
+
 
 
 
