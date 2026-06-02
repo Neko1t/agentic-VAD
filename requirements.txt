@@ -27,6 +27,7 @@ certifi
 cffi==1.17.1
 charset-normalizer==3.4.1
 click==8.1.8
+chromadb==0.5.23
 cloudpathlib==0.20.0
 coloredlogs==15.0.1
 comm
@@ -44,6 +45,7 @@ deep-sort-realtime==1.3.2
 deepsort==0.0.5
 dill
 distro
+easyocr==1.7.2
 einops==0.8.0
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85
 exceptiongroup
@@ -54,6 +56,7 @@ ffmpeg==1.4
 ffmpeg-python==0.2.0
 filelock==3.14.0
 fire==0.7.0
+faster-whisper==1.1.1
 # flash-attn is CUDA/torch/compiler-specific; install from a matching wheel or build from source.
 flatbuffers==25.1.24
 fonttools
@@ -154,6 +157,7 @@ pycryptodome==3.21.0
 pycryptodomex==3.22.0
 pydantic
 pydantic_core
+pytest==8.3.5
 Pygments==2.19.1
 pynndescent==0.5.13
 pyparsing
