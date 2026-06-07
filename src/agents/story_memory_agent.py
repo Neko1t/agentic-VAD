@@ -1,8 +1,20 @@
 from __future__ import annotations
 
-from typing import Sequence, Tuple
+from typing import List, Sequence, Tuple
 
-from src.core.schemas import EpisodeSummary, ObservationCard, RetrievalQuery, RollingSummaryState, TimeSpan
+from src.core.schemas import (
+    CalibrationResult,
+    EpisodeSummary,
+    ObservationCard,
+    RetrievalQuery,
+    RetrievalResult,
+    RollingSummaryState,
+    StoryMemoryInput,
+    StoryMemoryResult,
+    TimeSpan,
+    ToolCallRecord,
+)
+from src.memory.policy import MemoryPolicy
 from src.tools.rag_tool import RAGTool
 from src.tools.score_tool import ScoreTool
 
@@ -12,11 +24,13 @@ class StoryMemoryAgent:
         self,
         rag_tool: RAGTool,
         score_tool: ScoreTool,
+        memory_policy: MemoryPolicy | None = None,
         rolling_window_size: int = 4,
         top_k: int = 5,
     ):
         self.rag_tool = rag_tool
         self.score_tool = score_tool
+        self.memory_policy = memory_policy or MemoryPolicy()
         self.rolling_window_size = rolling_window_size
         self.top_k = top_k
 
@@ -60,6 +74,54 @@ class StoryMemoryAgent:
         state: RollingSummaryState,
         recent_cards: Sequence[ObservationCard],
     ) -> Tuple[EpisodeSummary, RollingSummaryState]:
+        episode, updated_state, _, _, _ = self._analyze_episode(state, recent_cards, self.top_k)
+        return episode, updated_state
+
+    def process(self, story_input: StoryMemoryInput) -> StoryMemoryResult:
+        episode, updated_state, retrieval, calibration, bounded_cards = self._analyze_episode(
+            story_input.state,
+            story_input.recent_observations,
+            story_input.top_k,
+        )
+        disagreement_score, contradiction_flags = self._detect_disagreement(calibration, retrieval)
+        memory_event = self.memory_policy.decide(
+            episode=episode,
+            state=updated_state,
+            calibration=calibration,
+            observations=bounded_cards,
+            retrieval=retrieval,
+            run_mode=story_input.run_mode,
+        )
+        return StoryMemoryResult(
+            video_id=story_input.video_id,
+            episode=episode,
+            state=updated_state,
+            retrieval=retrieval,
+            calibration=calibration,
+            memory_event=memory_event,
+            disagreement_score=disagreement_score,
+            contradiction_flags=contradiction_flags,
+            tool_trace=[
+                ToolCallRecord(
+                    tool_name="rag_retrieve",
+                    input_summary=episode.action_sequence,
+                    output_summary=f"{len(retrieval.similar_cases)} cases, {len(retrieval.matched_patterns)} patterns",
+                    confidence=retrieval.retrieval_confidence,
+                ),
+                ToolCallRecord(
+                    tool_name="fuse_scores",
+                    input_summary=f"local={calibration.score_local:.2f}, story={calibration.score_story:.2f}",
+                    output_summary=f"final={calibration.final_score:.2f}",
+                ),
+            ],
+        )
+
+    def _analyze_episode(
+        self,
+        state: RollingSummaryState,
+        recent_cards: Sequence[ObservationCard],
+        top_k: int,
+    ) -> Tuple[EpisodeSummary, RollingSummaryState, RetrievalResult, CalibrationResult, List[ObservationCard]]:
         if not recent_cards:
             raise ValueError("recent_cards must not be empty")
         bounded_cards = list(recent_cards)[-self.rolling_window_size :]
@@ -74,12 +136,13 @@ class StoryMemoryAgent:
             ]
         ).strip()
         query = RetrievalQuery(
+            video_id=updated_state.video_id,
             action_sequence=action_sequence,
             evidence_tags=list({action for card in bounded_cards for action in card.actions}),
             scene_type=updated_state.current_scene,
             story_text=story_text,
         )
-        retrieval = self.rag_tool.rag_retrieve(query, top_k=self.top_k)
+        retrieval = self.rag_tool.rag_retrieve(query, top_k=top_k)
         score_story = min(10.0, max(card.score_weighted for card in bounded_cards) * 0.6 + (sum(card.score_weighted for card in bounded_cards) / len(bounded_cards)) * 0.4)
         calibration = self.score_tool.fuse_scores(
             score_local=max(card.score_weighted for card in bounded_cards),
@@ -105,4 +168,21 @@ class StoryMemoryAgent:
             score_story=score_story,
             score_memory_adjusted=calibration.score_memory_adjusted,
         )
-        return episode, updated_state
+        return episode, updated_state, retrieval, calibration, bounded_cards
+
+    def _detect_disagreement(
+        self,
+        calibration: CalibrationResult,
+        retrieval: RetrievalResult,
+    ) -> Tuple[float, List[str]]:
+        disagreement_score = min(1.0, abs(calibration.score_local - calibration.final_score) / 10.0)
+        flags: List[str] = []
+        if calibration.score_local >= 7.0 and calibration.final_score <= 3.0:
+            flags.append("local_high_final_low")
+        if calibration.score_local <= 3.0 and calibration.final_score >= 7.0:
+            flags.append("local_low_final_high")
+        if retrieval.similar_cases and retrieval.retrieval_confidence >= 0.75:
+            flags.append("strong_memory_match")
+        if retrieval.matched_patterns:
+            flags.append("pattern_match")
+        return disagreement_score, flags

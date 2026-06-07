@@ -3,19 +3,43 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Protocol, Sequence
 
 from src.core.schemas import WindowInput
 
 
-class VLMTool:
+class VLMBackend(Protocol):
+    name: str
+
+    def describe(self, window_input: WindowInput) -> Dict[str, object]:
+        ...
+
+
+class PrecomputedCaptionBackend:
+    name = "precomputed_caption"
+
     def __init__(
         self,
         captions_dir: Path,
-        caption_backend: Optional[Callable[[WindowInput], str]] = None,
     ):
         self.captions_dir = captions_dir
-        self.caption_backend = caption_backend
+
+    def describe(self, window_input: WindowInput) -> Dict[str, object]:
+        captions = self._load_caption_map(window_input.video_id)
+        if not captions:
+            return {
+                "vision_caption": "",
+                "confidence": 0.0,
+                "backend_name": self.name,
+                "artifact_refs": [],
+            }
+        caption = self._select_caption(captions, window_input)
+        return {
+            "vision_caption": caption,
+            "confidence": 0.9 if caption else 0.2,
+            "backend_name": self.name,
+            "artifact_refs": [str(self.captions_dir / f"{window_input.video_id}.json")],
+        }
 
     def _load_caption_map(self, video_id: str) -> Dict[str, str]:
         path = self.captions_dir / f"{video_id}.json"
@@ -37,6 +61,72 @@ class VLMTool:
             candidates = [min(keys, key=lambda value: abs(value - midpoint))]
         selected = [captions[str(key)] for key in candidates[:3]]
         return " ".join(selected).strip()
+
+
+class CallableCaptionBackend:
+    name = "callable_caption"
+
+    def __init__(self, caption_backend: Callable[[WindowInput], str]):
+        self.caption_backend = caption_backend
+
+    def describe(self, window_input: WindowInput) -> Dict[str, object]:
+        caption = self.caption_backend(window_input)
+        return {
+            "vision_caption": caption,
+            "confidence": 0.7 if caption else 0.1,
+            "backend_name": self.name,
+            "artifact_refs": [],
+        }
+
+
+class MockVLMBackend:
+    name = "mock_vlm"
+
+    def __init__(self, caption: str = "", captions_by_window: Optional[Dict[str, str]] = None):
+        self.caption = caption
+        self.captions_by_window = captions_by_window or {}
+
+    def describe(self, window_input: WindowInput) -> Dict[str, object]:
+        caption = self.captions_by_window.get(window_input.window_id, self.caption)
+        return {
+            "vision_caption": caption,
+            "confidence": 1.0 if caption else 0.0,
+            "backend_name": self.name,
+            "artifact_refs": [],
+        }
+
+
+class NullVLMBackend:
+    name = "null_vlm"
+
+    def describe(self, window_input: WindowInput) -> Dict[str, object]:
+        return {
+            "vision_caption": "No caption available for this segment.",
+            "confidence": 0.1,
+            "backend_name": self.name,
+            "artifact_refs": [],
+        }
+
+
+class VLMTool:
+    def __init__(
+        self,
+        captions_dir: Optional[Path] = None,
+        caption_backend: Optional[Callable[[WindowInput], str]] = None,
+        backend: Optional[VLMBackend] = None,
+        backends: Optional[Sequence[VLMBackend]] = None,
+    ):
+        self.backends: List[VLMBackend] = []
+        if backends is not None:
+            self.backends.extend(backends)
+        if backend is not None:
+            self.backends.append(backend)
+        if captions_dir is not None:
+            self.backends.append(PrecomputedCaptionBackend(captions_dir))
+        if caption_backend is not None:
+            self.backends.append(CallableCaptionBackend(caption_backend))
+        if not self.backends:
+            self.backends.append(NullVLMBackend())
 
     def _extract_actions(self, caption: str) -> List[str]:
         action_keywords = [
@@ -93,18 +183,9 @@ class VLMTool:
         return "generic scene"
 
     def vlm_describe(self, window_input: WindowInput) -> Dict[str, object]:
-        caption = ""
-        confidence = 0.0
-        captions = self._load_caption_map(window_input.video_id)
-        if captions:
-            caption = self._select_caption(captions, window_input)
-            confidence = 0.9 if caption else 0.2
-        elif self.caption_backend is not None:
-            caption = self.caption_backend(window_input)
-            confidence = 0.7 if caption else 0.1
-        else:
-            caption = "No caption available for this segment."
-            confidence = 0.1
+        result = self._describe_with_first_available_backend(window_input)
+        caption = str(result.get("vision_caption", result.get("caption", "")))
+        confidence = float(result.get("confidence", 0.0))
         caption = re.sub(r"\s+", " ", caption).strip()
         return {
             "vision_caption": caption,
@@ -112,4 +193,16 @@ class VLMTool:
             "actions": self._extract_actions(caption),
             "scene_context": self._scene_context(caption),
             "confidence": confidence,
+            "backend_name": str(result.get("backend_name", "unknown_vlm")),
+            "artifact_refs": list(result.get("artifact_refs", [])),
         }
+
+    def _describe_with_first_available_backend(self, window_input: WindowInput) -> Dict[str, object]:
+        fallback: Dict[str, object] = {}
+        for backend in self.backends:
+            result = backend.describe(window_input)
+            caption = str(result.get("vision_caption", result.get("caption", ""))).strip()
+            fallback = result
+            if caption:
+                return result
+        return fallback

@@ -1,8 +1,39 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+
+class RunMode(str, Enum):
+    OFFLINE_EVAL = "offline_eval"
+    ONLINE_INFERENCE = "online_inference"
+    MEMORY_BUILDING = "memory_building"
+    DEBUG_REPLAY = "debug_replay"
+
+
+class MemoryWriteDecision(str, Enum):
+    WRITE = "write"
+    SKIP = "skip"
+    UPDATE_EXISTING = "update_existing"
+
+
+class MemoryCaseType(str, Enum):
+    HIGH_RISK = "high_risk"
+    HARD_NEGATIVE = "hard_negative"
+    AMBIGUOUS = "ambiguous"
+    ROUTINE = "routine"
+
+
+class ToolCallRecord(BaseModel):
+    tool_name: str
+    input_summary: str = ""
+    output_summary: str = ""
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    latency_ms: Optional[float] = Field(default=None, ge=0.0)
+    error: Optional[str] = None
+    artifact_refs: List[str] = Field(default_factory=list)
 
 
 class TimeSpan(BaseModel):
@@ -43,6 +74,7 @@ class ObservationCard(BaseModel):
     score_weighted: float = Field(default=0.0, ge=0.0, le=10.0)
     uncertainty: float = Field(default=0.0, ge=0.0, le=1.0)
     reason_trace: List[str] = Field(default_factory=list)
+    tool_trace: List[ToolCallRecord] = Field(default_factory=list)
 
 
 class RollingSummaryState(BaseModel):
@@ -109,6 +141,14 @@ class CaseMemoryRecord(BaseModel):
     outcome: str = ""
     embedding_text: str
     provisional: bool = True
+    case_type: MemoryCaseType = MemoryCaseType.AMBIGUOUS
+    source: str = "online_inference"
+    uncertainty: float = Field(default=0.0, ge=0.0, le=1.0)
+    local_score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    final_score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    retrieval_case_ids: List[str] = Field(default_factory=list)
+    matched_pattern_ids: List[str] = Field(default_factory=list)
+    hit_count: int = Field(default=1, ge=1)
 
 
 class PatternMemoryRecord(BaseModel):
@@ -123,6 +163,7 @@ class PatternMemoryRecord(BaseModel):
 
 
 class RetrievalQuery(BaseModel):
+    video_id: Optional[str] = None
     action_sequence: str
     evidence_tags: List[str] = Field(default_factory=list)
     scene_type: str = ""
@@ -141,3 +182,33 @@ class CalibrationResult(BaseModel):
     score_memory_adjusted: float = Field(ge=0.0, le=10.0)
     final_score: float = Field(ge=0.0, le=10.0)
     calibration_reason: List[str] = Field(default_factory=list)
+
+
+class MemoryWriteEvent(BaseModel):
+    decision: MemoryWriteDecision
+    case_type: Optional[MemoryCaseType] = None
+    reason: str = ""
+    skip_codes: List[str] = Field(default_factory=list)
+    case_record: Optional[CaseMemoryRecord] = None
+    duplicate_of: Optional[str] = None
+    similarity_to_existing: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class StoryMemoryInput(BaseModel):
+    video_id: str
+    state: RollingSummaryState
+    recent_observations: List[ObservationCard]
+    top_k: int = Field(default=5, ge=1)
+    run_mode: RunMode = RunMode.ONLINE_INFERENCE
+
+
+class StoryMemoryResult(BaseModel):
+    video_id: str
+    episode: EpisodeSummary
+    state: RollingSummaryState
+    retrieval: RetrievalResult
+    calibration: CalibrationResult
+    memory_event: Optional[MemoryWriteEvent] = None
+    disagreement_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    contradiction_flags: List[str] = Field(default_factory=list)
+    tool_trace: List[ToolCallRecord] = Field(default_factory=list)

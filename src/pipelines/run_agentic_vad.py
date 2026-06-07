@@ -9,11 +9,23 @@ import typer
 from src.agents.perception_agent import PerceptionAgent
 from src.agents.story_memory_agent import StoryMemoryAgent
 from src.core.config import PipelineConfig
-from src.core.schemas import CaseMemoryRecord, DecisionReport, DecisionSegment, ObservationCard, TimeSpan, WindowInput
+from src.core.schemas import (
+    DecisionReport,
+    DecisionSegment,
+    MemoryWriteDecision,
+    ObservationCard,
+    RunMode,
+    StoryMemoryInput,
+    StoryMemoryResult,
+    TimeSpan,
+    WindowInput,
+)
 from src.data.video_record import VideoRecord
 from src.memory.case_store import CaseMemoryStore
 from src.memory.embedding_builder import EmbeddingBuilder
+from src.memory.policy import MemoryPolicy
 from src.memory.pattern_store import PatternMemoryStore
+from src.memory.session_store import SessionMemoryStore
 from src.tools.audio_tool import AudioTool
 from src.tools.ocr_tool import OCRTool
 from src.tools.rag_tool import RAGTool
@@ -45,40 +57,10 @@ def _build_window_inputs(video: VideoRecord, frame_interval: int) -> List[Window
     return windows
 
 
-def _build_case_record(episode, state, score_threshold: float) -> CaseMemoryRecord | None:
-    score = max(episode.score_story, episode.score_memory_adjusted)
-    if score < score_threshold:
-        return None
-    entities = list(dict.fromkeys(state.active_entities))[:10]
-    evidence_tags = [token.strip() for token in episode.action_sequence.split("->") if token.strip()]
-    return CaseMemoryRecord(
-        case_id=f"{episode.video_id}_{episode.segment_span.start_frame}_{episode.segment_span.end_frame}",
-        video_id=episode.video_id,
-        time_span=episode.segment_span,
-        label="high-risk" if score >= 7.5 else "candidate",
-        risk_score=score,
-        episode_summary=episode.story_text,
-        action_sequence=episode.action_sequence,
-        key_entities=entities,
-        scene_type=state.current_scene,
-        evidence_tags=evidence_tags,
-        outcome="auto-generated from inference",
-        embedding_text=" | ".join(
-            [
-                episode.action_sequence,
-                state.current_scene,
-                " ".join(evidence_tags),
-                episode.story_text,
-            ]
-        ),
-        provisional=score < 8.0,
-    )
-
-
 def _build_report(
     video_id: str,
     observations: List[ObservationCard],
-    episodes,
+    story_results: List[StoryMemoryResult],
     threshold: float,
 ) -> DecisionReport:
     abnormal_segments: List[DecisionSegment] = []
@@ -86,8 +68,9 @@ def _build_report(
     retrieved_cases: List[str] = []
     matched_patterns: List[str] = []
     evidence: List[str] = []
-    for observation, episode in zip(observations, episodes):
-        score = max(observation.score_weighted, episode.score_memory_adjusted)
+    for observation, story_result in zip(observations, story_results):
+        episode = story_result.episode
+        score = story_result.calibration.final_score
         segment_scores.append(score)
         if score >= threshold:
             abnormal_segments.append(
@@ -98,8 +81,8 @@ def _build_report(
                 )
             )
             evidence.append(observation.vision_caption)
-        retrieved_cases.extend(episode.retrieved_case_ids)
-        matched_patterns.extend(episode.matched_pattern_ids)
+        retrieved_cases.extend(story_result.episode.retrieved_case_ids)
+        matched_patterns.extend(story_result.episode.matched_pattern_ids)
     video_level_score = sum(segment_scores) / len(segment_scores) if segment_scores else 0.0
     return DecisionReport(
         video_id=video_id,
@@ -125,6 +108,8 @@ def main(
     use_audio: bool = typer.Option(False),
     use_ocr: bool = typer.Option(False),
     top_k: int = typer.Option(5, min=1),
+    run_mode: RunMode = typer.Option(RunMode.ONLINE_INFERENCE),
+    use_chroma: bool = typer.Option(True),
 ) -> None:
     config = PipelineConfig(
         root_path=root_path,
@@ -135,9 +120,11 @@ def main(
         rolling_window_size=rolling_window_size,
         use_audio=use_audio,
         use_ocr=use_ocr,
+        run_mode=run_mode,
     )
     config.memory.storage_dir = memory_dir
     config.memory.top_k = top_k
+    config.memory.use_chroma = use_chroma
     config.ensure_directories()
 
     embedding_builder = EmbeddingBuilder(model_name=config.memory.embedding_model_name)
@@ -149,7 +136,8 @@ def main(
         use_chroma=config.memory.use_chroma,
     )
     pattern_store = PatternMemoryStore(config.memory.storage_dir / config.memory.pattern_file_name)
-    rag_tool = RAGTool(case_store=case_store, pattern_store=pattern_store)
+    session_store = SessionMemoryStore(embedding_builder) if config.memory.use_session_memory else None
+    rag_tool = RAGTool(case_store=case_store, pattern_store=pattern_store, session_store=session_store)
     score_tool = ScoreTool(config.scoring)
     perception_agent = PerceptionAgent(
         vlm_tool=VLMTool(captions_dir=config.captions_dir),
@@ -160,6 +148,7 @@ def main(
     story_agent = StoryMemoryAgent(
         rag_tool=rag_tool,
         score_tool=score_tool,
+        memory_policy=MemoryPolicy(write_threshold=config.scoring.provisional_score_threshold),
         rolling_window_size=config.rolling_window_size,
         top_k=config.memory.top_k,
     )
@@ -171,28 +160,46 @@ def main(
             continue
         observations: List[ObservationCard] = []
         episodes = []
+        story_results: List[StoryMemoryResult] = []
         state = story_agent.initialize_state(Path(video.path).stem)
         for window in windows:
             observation = perception_agent.process_window(window)
             observations.append(observation)
-            episode, state = story_agent.summarize_episode(state, observations[-config.rolling_window_size :])
-            episodes.append(episode)
-            case_record = _build_case_record(episode, state, config.scoring.provisional_score_threshold)
-            if case_record is not None:
-                rag_tool.rag_store(case_record)
-        report = _build_report(Path(video.path).stem, observations, episodes, config.scoring.segment_score_threshold)
+            story_input = StoryMemoryInput(
+                video_id=window.video_id,
+                state=state,
+                recent_observations=observations[-config.rolling_window_size :],
+                top_k=config.memory.top_k,
+                run_mode=config.run_mode,
+            )
+            story_result = story_agent.process(story_input)
+            state = story_result.state
+            episodes.append(story_result.episode)
+            story_results.append(story_result)
+            if (
+                story_result.memory_event is not None
+                and story_result.memory_event.decision == MemoryWriteDecision.WRITE
+                and story_result.memory_event.case_record is not None
+            ):
+                rag_tool.rag_store_session(story_result.memory_event.case_record)
+                rag_tool.rag_store(story_result.memory_event.case_record)
+        report = _build_report(Path(video.path).stem, observations, story_results, config.scoring.segment_score_threshold)
         report_dir = config.output_dir / "reports"
         observation_dir = config.output_dir / "observations"
         episode_dir = config.output_dir / "episodes"
+        story_result_dir = config.output_dir / "story_results"
         report_dir.mkdir(parents=True, exist_ok=True)
         observation_dir.mkdir(parents=True, exist_ok=True)
         episode_dir.mkdir(parents=True, exist_ok=True)
+        story_result_dir.mkdir(parents=True, exist_ok=True)
         with (report_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
             json.dump(report.model_dump(mode="json"), handle, indent=2)
         with (observation_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
             json.dump([item.model_dump(mode="json") for item in observations], handle, indent=2)
         with (episode_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
             json.dump([item.model_dump(mode="json") for item in episodes], handle, indent=2)
+        with (story_result_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
+            json.dump([item.model_dump(mode="json") for item in story_results], handle, indent=2)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,15 @@ from pathlib import Path
 
 from src.agents.story_memory_agent import StoryMemoryAgent
 from src.core.config import ScoringConfig
-from src.core.schemas import ModalityConfidence, ObservationCard, TimeSpan
+from src.core.schemas import (
+    MemoryWriteDecision,
+    ModalityConfidence,
+    ObservationCard,
+    RunMode,
+    StoryMemoryInput,
+    StoryMemoryResult,
+    TimeSpan,
+)
 from src.memory.case_store import CaseMemoryStore
 from src.memory.embedding_builder import EmbeddingBuilder
 from src.memory.pattern_store import PatternMemoryStore
@@ -49,3 +57,71 @@ def test_story_memory_agent_uses_rolling_summary(tmp_path: Path):
     episode, new_state = agent.summarize_episode(state, cards[-2:])
     assert "run -> fall" in episode.action_sequence
     assert new_state.event_chain[-2:] == ["run", "fall"]
+
+
+def test_story_memory_agent_process_returns_structured_result(tmp_path: Path):
+    case_store = CaseMemoryStore(
+        storage_dir=tmp_path,
+        collection_name="case_memory",
+        provisional_collection_name="provisional_case_memory",
+        embedding_builder=EmbeddingBuilder(),
+        use_chroma=False,
+    )
+    pattern_store = PatternMemoryStore(tmp_path / "pattern_memory.jsonl")
+    agent = StoryMemoryAgent(
+        rag_tool=RAGTool(case_store=case_store, pattern_store=pattern_store),
+        score_tool=ScoreTool(ScoringConfig()),
+        rolling_window_size=2,
+        top_k=3,
+    )
+    state = agent.initialize_state("video_1")
+    cards = [
+        _card("w2", 16, "run", 8.0),
+        _card("w3", 32, "fall", 8.5),
+    ]
+    result = agent.process(
+        StoryMemoryInput(
+            video_id="video_1",
+            state=state,
+            recent_observations=cards,
+            top_k=3,
+            run_mode=RunMode.ONLINE_INFERENCE,
+        )
+    )
+
+    assert isinstance(result, StoryMemoryResult)
+    assert "run -> fall" in result.episode.action_sequence
+    assert result.state.event_chain[-2:] == ["run", "fall"]
+    assert result.calibration.final_score >= 8.0
+    assert result.memory_event is not None
+    assert result.memory_event.decision == MemoryWriteDecision.WRITE
+    assert result.tool_trace
+
+
+def test_story_memory_agent_process_respects_offline_eval_no_write(tmp_path: Path):
+    case_store = CaseMemoryStore(
+        storage_dir=tmp_path,
+        collection_name="case_memory",
+        provisional_collection_name="provisional_case_memory",
+        embedding_builder=EmbeddingBuilder(),
+        use_chroma=False,
+    )
+    pattern_store = PatternMemoryStore(tmp_path / "pattern_memory.jsonl")
+    agent = StoryMemoryAgent(
+        rag_tool=RAGTool(case_store=case_store, pattern_store=pattern_store),
+        score_tool=ScoreTool(ScoringConfig()),
+        rolling_window_size=2,
+        top_k=3,
+    )
+    result = agent.process(
+        StoryMemoryInput(
+            video_id="video_1",
+            state=agent.initialize_state("video_1"),
+            recent_observations=[_card("w1", 0, "fall", 8.5)],
+            run_mode=RunMode.OFFLINE_EVAL,
+        )
+    )
+
+    assert result.memory_event is not None
+    assert result.memory_event.decision == MemoryWriteDecision.SKIP
+    assert "eval_mode_no_write" in result.memory_event.skip_codes

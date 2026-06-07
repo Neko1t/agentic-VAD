@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from src.core.schemas import RunMode
+
 
 class MemoryConfig(BaseModel):
     storage_dir: Path = Field(default=Path("./data/agentic_memory"))
@@ -13,6 +15,7 @@ class MemoryConfig(BaseModel):
     pattern_file_name: str = Field(default="pattern_memory.jsonl")
     embedding_model_name: str = Field(default="BAAI/bge-base-en-v1.5")
     use_chroma: bool = Field(default=True)
+    use_session_memory: bool = Field(default=True)
     top_k: int = Field(default=5, ge=1)
 
 
@@ -36,6 +39,7 @@ class PipelineConfig(BaseModel):
     use_ocr: bool = Field(default=False)
     audio_backend: Optional[str] = Field(default=None)
     ocr_backend: Optional[str] = Field(default=None)
+    run_mode: RunMode = Field(default=RunMode.ONLINE_INFERENCE)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
 
