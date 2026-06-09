@@ -15,11 +15,10 @@ from src.memory.pattern_store import PatternMemoryStore
 app = typer.Typer(add_completion=False, help="Extract simple pattern prototypes from accumulated case memory.")
 
 
-@app.command()
-def main(
-    memory_dir: Path = typer.Option(Path("./data/agentic_memory")),
-    min_support: int = typer.Option(2, min=1),
-) -> None:
+def extract_patterns(
+    memory_dir: Path,
+    min_support: int = 2,
+) -> Dict[str, object]:
     config = MemoryConfig(storage_dir=memory_dir)
     case_store = CaseMemoryStore(
         storage_dir=config.storage_dir,
@@ -58,7 +57,21 @@ def main(
             )
         )
     pattern_store.add_patterns(patterns)
-    typer.echo(f"Wrote {len(patterns)} pattern prototypes to {pattern_store.storage_file}")
+    return {
+        "pattern_count": len(patterns),
+        "pattern_file": str(pattern_store.storage_file),
+        "min_support": min_support,
+        "memory_dir": str(memory_dir),
+    }
+
+
+@app.command()
+def main(
+    memory_dir: Path = typer.Option(Path("./data/agentic_memory")),
+    min_support: int = typer.Option(2, min=1),
+) -> None:
+    result = extract_patterns(memory_dir=memory_dir, min_support=min_support)
+    typer.echo(f"Wrote {result['pattern_count']} pattern prototypes to {result['pattern_file']}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any, Iterable
 
 from src.core.schemas import ModalityConfidence, ObservationCard, ToolCallRecord, WindowInput
+from src.runtime.progress import ProgressEvent
 from src.tools.audio_tool import AudioTool
 from src.tools.ocr_tool import OCRTool
 from src.tools.score_tool import ScoreTool
@@ -18,16 +19,20 @@ class PerceptionAgent:
         audio_tool: AudioTool,
         ocr_tool: OCRTool,
         score_tool: ScoreTool,
+        progress_callback: Callable[[ProgressEvent], None] | None = None,
     ):
         self.vlm_tool = vlm_tool
         self.audio_tool = audio_tool
         self.ocr_tool = ocr_tool
         self.score_tool = score_tool
+        self.progress_callback = progress_callback
 
     def process_window(self, window_input: WindowInput) -> ObservationCard:
         vision, vision_trace = self._call_tool(
             tool_name="vlm_describe",
             input_summary=window_input.window_id,
+            video_id=window_input.video_id,
+            window_id=window_input.window_id,
             call=lambda: self.vlm_tool.vlm_describe(window_input),
             fallback={
                 "vision_caption": "",
@@ -41,12 +46,16 @@ class PerceptionAgent:
         audio, audio_trace = self._call_tool(
             tool_name="audio_describe",
             input_summary=window_input.window_id,
+            video_id=window_input.video_id,
+            window_id=window_input.window_id,
             call=lambda: self.audio_tool.audio_describe(window_input),
             fallback={"audio_events": [], "transcript": "", "confidence": 0.0},
         )
         ocr, ocr_trace = self._call_tool(
             tool_name="ocr_extract",
             input_summary=window_input.window_id,
+            video_id=window_input.video_id,
+            window_id=window_input.window_id,
             call=lambda: self.ocr_tool.ocr_extract(window_input),
             fallback={"ocr_texts": [], "confidence": 0.0},
         )
@@ -70,6 +79,8 @@ class PerceptionAgent:
         scored, score_trace = self._call_tool(
             tool_name="score_observation",
             input_summary=f"actions={','.join(card.actions)}",
+            video_id=window_input.video_id,
+            window_id=window_input.window_id,
             call=lambda: self.score_tool.score_observation(card),
             fallback={
                 "score_raw": 0.0,
@@ -116,9 +127,21 @@ class PerceptionAgent:
         self,
         tool_name: str,
         input_summary: str,
+        video_id: str,
+        window_id: str,
         call: Callable[[], dict[str, Any]],
         fallback: dict[str, Any],
     ) -> tuple[dict[str, Any], ToolCallRecord]:
+        self._emit_progress(
+            ProgressEvent(
+                stage="perception",
+                event="tool_start",
+                tool_name=tool_name,
+                video_id=video_id,
+                window_id=window_id,
+                message="running",
+            )
+        )
         started = time.perf_counter()
         error = None
         try:
@@ -127,6 +150,20 @@ class PerceptionAgent:
             result = fallback
             error = f"{exc.__class__.__name__}: {exc}"
         latency_ms = (time.perf_counter() - started) * 1000.0
+        status = f"done {latency_ms:.1f}ms"
+        if error:
+            status = f"fallback {latency_ms:.1f}ms"
+        self._emit_progress(
+            ProgressEvent(
+                stage="perception",
+                event="tool_end",
+                tool_name=tool_name,
+                video_id=video_id,
+                window_id=window_id,
+                message=status,
+                metadata={"latency_ms": round(latency_ms, 3), "error": error},
+            )
+        )
         return result, self._tool_record(
             tool_name=tool_name,
             input_summary=input_summary,
@@ -163,3 +200,7 @@ class PerceptionAgent:
         if value:
             return [str(value)]
         return []
+
+    def _emit_progress(self, event: ProgressEvent) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(event)

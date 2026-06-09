@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 import typer
 
@@ -26,6 +26,7 @@ from src.memory.embedding_builder import EmbeddingBuilder
 from src.memory.policy import MemoryPolicy
 from src.memory.pattern_store import PatternMemoryStore
 from src.memory.session_store import SessionMemoryStore
+from src.runtime.progress import NullProgressReporter, ProgressEvent, ProgressReporter
 from src.tools.audio_tool import AudioTool
 from src.tools.ocr_tool import OCRTool
 from src.tools.rag_tool import RAGTool
@@ -96,21 +97,39 @@ def _build_report(
     )
 
 
-@app.command()
-def main(
-    root_path: Path = typer.Option(..., exists=True, file_okay=False),
-    annotation_file_path: Path = typer.Option(..., exists=True, dir_okay=False),
-    captions_dir: Path = typer.Option(..., exists=True, file_okay=False),
-    output_dir: Path = typer.Option(Path("./data/agentic_outputs")),
-    memory_dir: Path = typer.Option(Path("./data/agentic_memory")),
-    frame_interval: int = typer.Option(16, min=1),
-    rolling_window_size: int = typer.Option(4, min=1),
-    use_audio: bool = typer.Option(False),
-    use_ocr: bool = typer.Option(False),
-    top_k: int = typer.Option(5, min=1),
-    run_mode: RunMode = typer.Option(RunMode.ONLINE_INFERENCE),
-    use_chroma: bool = typer.Option(True),
-) -> None:
+def _build_eval_scores(
+    observations: List[ObservationCard],
+    story_results: List[StoryMemoryResult],
+    normalize_to_unit_interval: bool = True,
+) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for observation, story_result in zip(observations, story_results):
+        frame_idx = observation.time_span.start_frame
+        score = float(story_result.calibration.final_score)
+        if normalize_to_unit_interval:
+            score = score / 10.0
+        scores[str(frame_idx)] = round(score, 4)
+    return scores
+
+
+def run_pipeline(
+    *,
+    root_path: Path,
+    annotation_file_path: Path,
+    captions_dir: Path,
+    output_dir: Path = Path("./data/agentic_outputs"),
+    memory_dir: Path = Path("./data/agentic_memory"),
+    frame_interval: int = 16,
+    rolling_window_size: int = 4,
+    use_audio: bool = False,
+    use_ocr: bool = False,
+    top_k: int = 5,
+    run_mode: RunMode = RunMode.ONLINE_INFERENCE,
+    use_chroma: bool = True,
+    export_eval_scores: bool = True,
+    progress_reporter: ProgressReporter | None = None,
+) -> dict[str, Any]:
+    reporter = progress_reporter or NullProgressReporter()
     config = PipelineConfig(
         root_path=root_path,
         annotation_file_path=annotation_file_path,
@@ -144,6 +163,7 @@ def main(
         audio_tool=AudioTool(enabled=config.use_audio, backend_name=config.audio_backend),
         ocr_tool=OCRTool(enabled=config.use_ocr, backend_name=config.ocr_backend),
         score_tool=score_tool,
+        progress_callback=reporter.emit,
     )
     story_agent = StoryMemoryAgent(
         rag_tool=rag_tool,
@@ -151,18 +171,67 @@ def main(
         memory_policy=MemoryPolicy(write_threshold=config.scoring.provisional_score_threshold),
         rolling_window_size=config.rolling_window_size,
         top_k=config.memory.top_k,
+        progress_callback=reporter.emit,
     )
 
     video_records = _load_video_records(config.root_path, config.annotation_file_path)
-    for video in video_records:
-        windows = _build_window_inputs(video, config.frame_interval)
+    prepared = [(video, _build_window_inputs(video, config.frame_interval)) for video in video_records]
+    total_windows = sum(len(windows) for _, windows in prepared)
+    processed_windows = 0
+    processed_videos = 0
+
+    reporter.emit(
+        ProgressEvent(
+            stage="pipeline",
+            event="run_start",
+            completed=0,
+            total=max(1, total_windows),
+            message=f"starting {len(prepared)} videos",
+        )
+    )
+
+    report_dir = config.output_dir / "reports"
+    observation_dir = config.output_dir / "observations"
+    episode_dir = config.output_dir / "episodes"
+    story_result_dir = config.output_dir / "story_results"
+    score_dir = config.output_dir / "scores"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    observation_dir.mkdir(parents=True, exist_ok=True)
+    episode_dir.mkdir(parents=True, exist_ok=True)
+    story_result_dir.mkdir(parents=True, exist_ok=True)
+    if export_eval_scores:
+        score_dir.mkdir(parents=True, exist_ok=True)
+
+    for video_index, (video, windows) in enumerate(prepared, start=1):
         if not windows:
             continue
+        video_id = Path(video.path).stem
+        reporter.emit(
+            ProgressEvent(
+                stage="pipeline",
+                event="video_start",
+                completed=processed_windows,
+                total=max(1, total_windows),
+                video_id=video_id,
+                message=f"video {video_index}/{len(prepared)}",
+            )
+        )
         observations: List[ObservationCard] = []
         episodes = []
         story_results: List[StoryMemoryResult] = []
-        state = story_agent.initialize_state(Path(video.path).stem)
-        for window in windows:
+        state = story_agent.initialize_state(video_id)
+        for window_index, window in enumerate(windows, start=1):
+            reporter.emit(
+                ProgressEvent(
+                    stage="pipeline",
+                    event="window_start",
+                    completed=processed_windows,
+                    total=max(1, total_windows),
+                    video_id=video_id,
+                    window_id=window.window_id,
+                    message=f"window {window_index}/{len(windows)}",
+                )
+            )
             observation = perception_agent.process_window(window)
             observations.append(observation)
             story_input = StoryMemoryInput(
@@ -183,15 +252,19 @@ def main(
             ):
                 rag_tool.rag_store_session(story_result.memory_event.case_record)
                 rag_tool.rag_store(story_result.memory_event.case_record)
-        report = _build_report(Path(video.path).stem, observations, story_results, config.scoring.segment_score_threshold)
-        report_dir = config.output_dir / "reports"
-        observation_dir = config.output_dir / "observations"
-        episode_dir = config.output_dir / "episodes"
-        story_result_dir = config.output_dir / "story_results"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        observation_dir.mkdir(parents=True, exist_ok=True)
-        episode_dir.mkdir(parents=True, exist_ok=True)
-        story_result_dir.mkdir(parents=True, exist_ok=True)
+            processed_windows += 1
+            reporter.emit(
+                ProgressEvent(
+                    stage="pipeline",
+                    event="window_end",
+                    completed=processed_windows,
+                    total=max(1, total_windows),
+                    video_id=video_id,
+                    window_id=window.window_id,
+                    message=f"window {window_index}/{len(windows)} done",
+                )
+            )
+        report = _build_report(video_id, observations, story_results, config.scoring.segment_score_threshold)
         with (report_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
             json.dump(report.model_dump(mode="json"), handle, indent=2)
         with (observation_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
@@ -200,6 +273,79 @@ def main(
             json.dump([item.model_dump(mode="json") for item in episodes], handle, indent=2)
         with (story_result_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
             json.dump([item.model_dump(mode="json") for item in story_results], handle, indent=2)
+        if export_eval_scores:
+            eval_scores = _build_eval_scores(observations, story_results)
+            with (score_dir / f"{report.video_id}.json").open("w", encoding="utf-8") as handle:
+                json.dump(eval_scores, handle, indent=4)
+        processed_videos += 1
+        reporter.emit(
+            ProgressEvent(
+                stage="pipeline",
+                event="video_end",
+                completed=processed_windows,
+                total=max(1, total_windows),
+                video_id=video_id,
+                message=f"saved outputs for {video_id}",
+            )
+        )
+
+    summary = {
+        "videos_total": len(prepared),
+        "videos_processed": processed_videos,
+        "windows_total": total_windows,
+        "windows_processed": processed_windows,
+        "output_dir": str(config.output_dir),
+        "memory_dir": str(config.memory.storage_dir),
+        "reports_dir": str(report_dir),
+        "observations_dir": str(observation_dir),
+        "episodes_dir": str(episode_dir),
+        "story_results_dir": str(story_result_dir),
+        "scores_dir": str(score_dir) if export_eval_scores else None,
+        "export_eval_scores": export_eval_scores,
+    }
+    reporter.emit(
+        ProgressEvent(
+            stage="pipeline",
+            event="run_complete",
+            completed=max(1, total_windows) if total_windows else 1,
+            total=max(1, total_windows),
+            message=f"completed {processed_videos} videos",
+        )
+    )
+    return summary
+
+
+@app.command()
+def main(
+    root_path: Path = typer.Option(..., exists=True, file_okay=False),
+    annotation_file_path: Path = typer.Option(..., exists=True, dir_okay=False),
+    captions_dir: Path = typer.Option(..., exists=True, file_okay=False),
+    output_dir: Path = typer.Option(Path("./data/agentic_outputs")),
+    memory_dir: Path = typer.Option(Path("./data/agentic_memory")),
+    frame_interval: int = typer.Option(16, min=1),
+    rolling_window_size: int = typer.Option(4, min=1),
+    use_audio: bool = typer.Option(False),
+    use_ocr: bool = typer.Option(False),
+    top_k: int = typer.Option(5, min=1),
+    run_mode: RunMode = typer.Option(RunMode.ONLINE_INFERENCE),
+    use_chroma: bool = typer.Option(True),
+    export_eval_scores: bool = typer.Option(True),
+) -> None:
+    run_pipeline(
+        root_path=root_path,
+        annotation_file_path=annotation_file_path,
+        captions_dir=captions_dir,
+        output_dir=output_dir,
+        memory_dir=memory_dir,
+        frame_interval=frame_interval,
+        rolling_window_size=rolling_window_size,
+        use_audio=use_audio,
+        use_ocr=use_ocr,
+        top_k=top_k,
+        run_mode=run_mode,
+        use_chroma=use_chroma,
+        export_eval_scores=export_eval_scores,
+    )
 
 
 if __name__ == "__main__":

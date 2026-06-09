@@ -42,8 +42,11 @@ Key packages:
   - `perception_agent.py`: `PerceptionAgent`, which calls VLM/audio/OCR/scoring
     tools and returns an `ObservationCard`.
   - `story_memory_agent.py`: `StoryMemoryAgent`, which updates rolling context,
-    retrieves memory, calibrates score, and returns `(EpisodeSummary,
-    RollingSummaryState)` today.
+    retrieves memory, calibrates score, and returns `StoryMemoryResult`.
+
+- `src/runtime`
+  - `progress.py`: runtime progress event schema plus single-line Rich progress
+    reporter used by the end-to-end workflow runner.
 
 - `src/tools`
   - `vlm_tool.py`: currently reads precomputed captions and extracts simple
@@ -61,8 +64,11 @@ Key packages:
 
 - `src/pipelines`
   - `run_agentic_vad.py`: current agentic prototype pipeline. It loads videos,
-    builds windows, calls agents, writes observations/episodes/reports, and
-    currently still builds `CaseMemoryRecord` in the pipeline.
+    builds windows, calls agents, executes memory events, exports eval-ready
+    scores, and emits fine-grained progress events.
+  - `run_agentic_workflow.py`: end-to-end workflow runner that can execute
+    `pipeline -> promote -> patterns -> metrics -> compare` in one command or
+    run selected stages independently for debugging.
   - `build_case_memory.py`: imports episode outputs into memory.
   - `extract_patterns_offline.py`: extracts pattern prototypes from finalized
     case memory.
@@ -123,6 +129,14 @@ Implemented in the first development pass:
 - `PerceptionAgent` tool execution now captures `latency_ms` and `error` in
   `ToolCallRecord`. Failed tools fall back to safe low-information outputs while
   preserving the error string in the trace.
+- `run_agentic_vad.py` now exports original-eval-compatible score JSON files
+  under `output_dir/scores/`, using the current observation window start frame
+  as the key and normalized `final_score` as the value.
+- `src/eval/agentic_vad_metrics.py` can run the original `ROC AUC / PR AUC`
+  evaluator directly on agentic-exported scores.
+- `src/pipelines/run_agentic_workflow.py` can now run the complete system with
+  a single-line dynamic progress bar, stage selection, metric export, and
+  optional baseline comparison.
 - `pytest.ini` now sets `pythonpath = .` and uses a project-local pytest temp
   directory.
 
@@ -353,6 +367,7 @@ Tests to add:
 - MemoryPolicy offline-eval skip.
 - StoryMemoryAgent returns full `StoryMemoryResult`.
 - Pipeline no longer directly constructs `CaseMemoryRecord`.
+- Workflow runner stage selection and metric comparison outputs.
 
 ## Design Decisions To Preserve
 
@@ -392,6 +407,8 @@ LLM-based scorer, must follow these rules to reduce GPU memory risk:
 
 - Add real `VideoLLaMABackend` once local model files are available under
   `libs/`.
+- Decide whether to add a real baseline `scores_dir` preset for automated
+  comparison against the original author pipeline on each dataset.
 
 After this, the project will have a clean agent communication layer suitable
 for real VLM backend integration, LLM-based story reasoning, session memory,

@@ -20,6 +20,14 @@ The current system is a local-first, lightweight multi-agent pipeline:
 The pipeline currently runs with precomputed captions or mock/callable VLM
 backends. A real `VideoLLaMABackend` is planned but not yet implemented.
 
+There is now also a workflow-level runner:
+
+- `src/pipelines/run_agentic_workflow.py`
+- `scripts/run_agentic_workflow.py`
+
+It can run the full path or selected stages while showing a single-line dynamic
+progress bar.
+
 ## 2. Runtime Diagram
 
 ```mermaid
@@ -86,6 +94,7 @@ flowchart TD
 Main file:
 
 - `src/pipelines/run_agentic_vad.py`
+- `src/pipelines/run_agentic_workflow.py`
 
 The pipeline performs these steps:
 
@@ -98,6 +107,13 @@ The pipeline performs these steps:
 7. Call `StoryMemoryAgent.process(...)`.
 8. Execute `MemoryWriteEvent` when the decision is `write`.
 9. Persist per-video artifacts.
+
+The workflow runner can wrap this pipeline and optionally continue with:
+
+10. Offline memory promotion.
+11. Offline pattern extraction.
+12. Original-metric-compatible evaluation.
+13. Baseline metric comparison.
 
 The pipeline should remain thin. It should not build `CaseMemoryRecord`
 directly and should not implement anomaly reasoning or retrieval rules.
@@ -314,6 +330,7 @@ output_dir/reports/{video_id}.json
 output_dir/observations/{video_id}.json
 output_dir/episodes/{video_id}.json
 output_dir/story_results/{video_id}.json
+output_dir/scores/{video_id}.json
 ```
 
 Artifacts contain:
@@ -323,6 +340,18 @@ Artifacts contain:
 - `story_results`: full story-memory agent result, including retrieval,
   calibration, memory event, contradiction flags, and story-level traces.
 - `reports`: final video-level report and suspicious segments.
+- `scores`: original-eval-compatible temporal score files keyed by current
+  observation window start frame. These are intended for `src/eval.py`.
+
+The workflow runner also writes:
+
+```text
+output_dir/promotion_report.json
+output_dir/metrics/
+output_dir/baseline_metrics/
+output_dir/comparison_report.json
+output_dir/workflow_summary.json
+```
 
 ## 10. Offline Promotion Flow
 
@@ -389,7 +418,38 @@ Future real model backends must follow:
 - Provide `close()` or `unload()` for GPU-owning backends.
 - Treat `torch.cuda.empty_cache()` as cleanup, not primary memory management.
 
-## 13. Current Test Coverage
+## 13. Temporal VAD Evaluation Compatibility
+
+The current agentic pipeline exports temporal score JSON files that follow the
+same basic format used by the original VAD evaluation path.
+
+Main files:
+
+- `src/pipelines/run_agentic_vad.py`
+- `src/eval.py`
+- `src/eval/agentic_vad_metrics.py`
+
+For each video, `run_agentic_vad.py` now writes:
+
+```text
+output_dir/scores/{video_id}.json
+```
+
+Each file maps:
+
+- window start frame index
+- normalized `final_score` in `[0, 1]`
+
+This makes the exported scores compatible with the original temporal evaluator,
+which computes:
+
+- `ROC AUC`
+- `PR AUC`
+
+The convenience wrapper `src/eval/agentic_vad_metrics.py` delegates to the
+original evaluator while accepting the agentic-exported score directory.
+
+## 14. Current Test Coverage
 
 The test suite currently covers:
 
@@ -406,11 +466,36 @@ The test suite currently covers:
 - promotion pipeline utility
 - pipeline report contract
 - tiny mocked end-to-end pipeline run
+- score export compatibility
+- workflow runner stage orchestration
+- workflow comparison output generation
 
 Run:
 
 ```powershell
 pytest -q
+```
+
+## 15. One-Command Entry
+
+Recommended entry script:
+
+```powershell
+python scripts/run_agentic_workflow.py `
+  --root-path <frames_root> `
+  --annotation-file-path <test.txt> `
+  --captions-dir <captions_dir> `
+  --memory-dir <memory_dir> `
+  --output-dir <output_dir> `
+  --temporal-annotation-file <temporal_test.txt>
+```
+
+Useful debug examples:
+
+```powershell
+python scripts/run_agentic_workflow.py ... --stage pipeline
+python scripts/run_agentic_workflow.py ... --stage pipeline --stage metrics
+python scripts/run_agentic_workflow.py ... --baseline-scores-dir <original_scores_dir>
 ```
 
 The test config uses a project-local pytest temp directory to avoid Windows

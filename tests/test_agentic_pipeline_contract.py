@@ -71,6 +71,8 @@ def test_pipeline_no_longer_builds_case_memory_directly():
     assert "MemoryWriteDecision.WRITE" in source
     assert "SessionMemoryStore" in source
     assert "rag_store_session" in source
+    assert "export_eval_scores" in source
+    assert "_build_eval_scores" in source
 
 
 def test_agentic_pipeline_runs_tiny_mocked_dataset(tmp_path):
@@ -111,19 +113,24 @@ def test_agentic_pipeline_runs_tiny_mocked_dataset(tmp_path):
     observation_path = output_dir / "observations" / "video_1.json"
     episode_path = output_dir / "episodes" / "video_1.json"
     story_result_path = output_dir / "story_results" / "video_1.json"
+    score_path = output_dir / "scores" / "video_1.json"
     assert report_path.exists()
     assert observation_path.exists()
     assert episode_path.exists()
     assert story_result_path.exists()
+    assert score_path.exists()
 
     observations = json.loads(observation_path.read_text(encoding="utf-8"))
     story_results = json.loads(story_result_path.read_text(encoding="utf-8"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    exported_scores = json.loads(score_path.read_text(encoding="utf-8"))
     assert len(observations) == 2
     assert len(story_results) == 2
     assert observations[0]["tool_trace"]
     assert story_results[-1]["memory_event"]["decision"] == "write"
     assert report["abnormal_segments"]
+    assert sorted(exported_scores.keys()) == ["0", "16"]
+    assert all(0.0 <= value <= 1.0 for value in exported_scores.values())
 
     store = CaseMemoryStore(
         storage_dir=memory_dir,

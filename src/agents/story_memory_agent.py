@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import List, Sequence, Tuple
 
 from src.core.schemas import (
@@ -15,6 +16,7 @@ from src.core.schemas import (
     ToolCallRecord,
 )
 from src.memory.policy import MemoryPolicy
+from src.runtime.progress import ProgressEvent
 from src.tools.rag_tool import RAGTool
 from src.tools.score_tool import ScoreTool
 
@@ -27,12 +29,14 @@ class StoryMemoryAgent:
         memory_policy: MemoryPolicy | None = None,
         rolling_window_size: int = 4,
         top_k: int = 5,
+        progress_callback=None,
     ):
         self.rag_tool = rag_tool
         self.score_tool = score_tool
         self.memory_policy = memory_policy or MemoryPolicy()
         self.rolling_window_size = rolling_window_size
         self.top_k = top_k
+        self.progress_callback = progress_callback
 
     def initialize_state(self, video_id: str) -> RollingSummaryState:
         return RollingSummaryState(video_id=video_id)
@@ -84,13 +88,19 @@ class StoryMemoryAgent:
             story_input.top_k,
         )
         disagreement_score, contradiction_flags = self._detect_disagreement(calibration, retrieval)
-        memory_event = self.memory_policy.decide(
-            episode=episode,
-            state=updated_state,
-            calibration=calibration,
-            observations=bounded_cards,
-            retrieval=retrieval,
-            run_mode=story_input.run_mode,
+        memory_event = self._call_tool(
+            tool_name="memory_policy",
+            video_id=story_input.video_id,
+            window_id=bounded_cards[-1].window_id,
+            input_summary=episode.action_sequence,
+            call=lambda: self.memory_policy.decide(
+                episode=episode,
+                state=updated_state,
+                calibration=calibration,
+                observations=bounded_cards,
+                retrieval=retrieval,
+                run_mode=story_input.run_mode,
+            ),
         )
         return StoryMemoryResult(
             video_id=story_input.video_id,
@@ -142,14 +152,26 @@ class StoryMemoryAgent:
             scene_type=updated_state.current_scene,
             story_text=story_text,
         )
-        retrieval = self.rag_tool.rag_retrieve(query, top_k=top_k)
+        retrieval = self._call_tool(
+            tool_name="rag_retrieve",
+            video_id=updated_state.video_id,
+            window_id=bounded_cards[-1].window_id,
+            input_summary=action_sequence,
+            call=lambda: self.rag_tool.rag_retrieve(query, top_k=top_k),
+        )
         score_story = min(10.0, max(card.score_weighted for card in bounded_cards) * 0.6 + (sum(card.score_weighted for card in bounded_cards) / len(bounded_cards)) * 0.4)
-        calibration = self.score_tool.fuse_scores(
-            score_local=max(card.score_weighted for card in bounded_cards),
-            score_story=score_story,
-            retrieval_confidence=retrieval.retrieval_confidence,
-            similar_cases=retrieval.similar_cases,
-            matched_patterns=retrieval.matched_patterns,
+        calibration = self._call_tool(
+            tool_name="fuse_scores",
+            video_id=updated_state.video_id,
+            window_id=bounded_cards[-1].window_id,
+            input_summary=f"{action_sequence} | local={max(card.score_weighted for card in bounded_cards):.2f}",
+            call=lambda: self.score_tool.fuse_scores(
+                score_local=max(card.score_weighted for card in bounded_cards),
+                score_story=score_story,
+                retrieval_confidence=retrieval.retrieval_confidence,
+                similar_cases=retrieval.similar_cases,
+                matched_patterns=retrieval.matched_patterns,
+            ),
         )
         span = TimeSpan(
             start_frame=bounded_cards[0].time_span.start_frame,
@@ -186,3 +208,56 @@ class StoryMemoryAgent:
         if retrieval.matched_patterns:
             flags.append("pattern_match")
         return disagreement_score, flags
+
+    def _call_tool(
+        self,
+        tool_name: str,
+        video_id: str,
+        window_id: str,
+        input_summary: str,
+        call,
+    ):
+        self._emit_progress(
+            ProgressEvent(
+                stage="story_memory",
+                event="tool_start",
+                tool_name=tool_name,
+                video_id=video_id,
+                window_id=window_id,
+                message="running",
+            )
+        )
+        started = time.perf_counter()
+        try:
+            result = call()
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            self._emit_progress(
+                ProgressEvent(
+                    stage="story_memory",
+                    event="tool_error",
+                    tool_name=tool_name,
+                    video_id=video_id,
+                    window_id=window_id,
+                    message=f"error {latency_ms:.1f}ms",
+                    metadata={"input_summary": input_summary, "error": f"{exc.__class__.__name__}: {exc}"},
+                )
+            )
+            raise
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        self._emit_progress(
+            ProgressEvent(
+                stage="story_memory",
+                event="tool_end",
+                tool_name=tool_name,
+                video_id=video_id,
+                window_id=window_id,
+                message=f"done {latency_ms:.1f}ms",
+                metadata={"input_summary": input_summary, "latency_ms": round(latency_ms, 3)},
+            )
+        )
+        return result
+
+    def _emit_progress(self, event: ProgressEvent) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(event)
