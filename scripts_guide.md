@@ -58,6 +58,42 @@ Key presets:
 
 ## 2. Agentic Workflow
 
+### `build_ucf_crime_mini_subset.sh`
+
+Purpose:
+
+- Build a compact UCF-Crime subset for pre-experiments.
+- Copies selected annotations, captions, baseline scores, optional videos, and
+  optional extracted frames into `data/ucf_crime_mini/`.
+
+Typical usage:
+
+```bash
+chmod +x build_ucf_crime_mini_subset.sh
+./build_ucf_crime_mini_subset.sh
+```
+
+Custom video list:
+
+```bash
+./build_ucf_crime_mini_subset.sh \
+  --video Abuse028_x264 \
+  --video Abuse030_x264 \
+  --video Arrest001_x264 \
+  --video Arson009_x264 \
+  --video Arson010_x264
+```
+
+Main implementation:
+
+- `scripts/build_ucf_crime_mini_subset.py`
+
+Notes:
+
+- Uses progress bars for subset copy and frame extraction.
+- Automatically skips files and extracted frames that already exist unless
+  `--force` is provided.
+
 ### `run_agentic_workflow.sh`
 
 Purpose:
