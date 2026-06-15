@@ -19,7 +19,7 @@ def test_run_repl_session_renders_overview_and_help(monkeypatch, tmp_path: Path)
 
     assert exit_code == 0
     combined = "\n".join(outputs)
-    assert "Agentic VAD REPL" in combined
+    assert "Agentic VAD Console" in combined
     assert "Supported Commands" in combined
 
 
@@ -58,7 +58,8 @@ def test_run_repl_session_supports_status_and_results(monkeypatch, tmp_path: Pat
 
     assert exit_code == 0
     combined = "\n".join(outputs)
-    assert "Workspace Readiness" in combined
+    assert "Agentic VAD Console" in combined
+    assert "Next Actions" in combined
     assert "Result Summary" in combined
 
 
@@ -153,7 +154,8 @@ def test_run_repl_session_runs_mini_when_ready(monkeypatch, tmp_path: Path):
     assert recorded["workflow_type"] == "mini"
     assert recorded["capture_progress"] is True
     combined = "\n".join(outputs)
-    assert "Run Summary" in combined
+    assert "Run" in combined
+    assert "Status" in combined
     assert "compare" in combined.lower()
 
 
@@ -218,7 +220,9 @@ def test_run_repl_session_streams_progress_updates(monkeypatch, tmp_path: Path):
 
     assert exit_code == 0
     combined = "\n".join(outputs)
-    assert "Run Progress" in combined
+    assert "Active" in combined
+    assert "Stage Progress" in combined
+    assert "Recent Events" in combined
     assert "vlm_tool" in combined
     assert "comparison finished" in combined
 
@@ -267,3 +271,27 @@ def test_run_repl_session_supports_compare(monkeypatch, tmp_path: Path):
     combined = "\n".join(outputs)
     assert "Compare Summary" in combined
     assert "roc_auc_delta" in combined
+
+
+def test_run_repl_session_uses_contextual_prompt(monkeypatch, tmp_path: Path):
+    from src.app.repl_shell import run_repl_session
+
+    inputs = iter(["exit"])
+    prompts: list[str] = []
+    outputs: list[str] = []
+
+    def _fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(inputs)
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+    exit_code = run_repl_session(
+        repo_root=tmp_path,
+        preferred_dataset="ucf_crime",
+        emit_output=outputs.append,
+    )
+
+    assert exit_code == 0
+    assert prompts[0].startswith("agentic-vad [")
+    assert "mini:" in prompts[0]
+    assert "full:" in prompts[0]

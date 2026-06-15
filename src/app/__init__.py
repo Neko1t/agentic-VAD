@@ -1,3 +1,3 @@
-from .cli import app
+"""Application package for the agentic VAD control surface."""
 
-__all__ = ["app"]
+__all__: list[str] = []

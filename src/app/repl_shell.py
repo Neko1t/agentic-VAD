@@ -40,6 +40,12 @@ def render_help_text() -> str:
     )
 
 
+def build_prompt_text(overview: dict[str, object]) -> str:
+    mini_state = "ready" if overview.get("mini_ready") else "missing"
+    full_state = "ready" if overview.get("full_ready") else "missing"
+    return f"agentic-vad [mini:{mini_state} full:{full_state}] > "
+
+
 def run_repl_session(
     *,
     repo_root: Path,
@@ -51,7 +57,7 @@ def run_repl_session(
 
     while True:
         try:
-            raw = input("agentic-vad> ")
+            raw = input(build_prompt_text(overview))
         except EOFError:
             return 0
 
@@ -79,6 +85,7 @@ def run_repl_session(
                 output_dir=request.output_dir,
             )
             emit_output(render_doctor_summary(snapshot))
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "status":
             overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
@@ -87,21 +94,25 @@ def run_repl_session(
         if command.name == "results":
             summary = load_results(repo_root / "data" / "agentic_outputs")
             emit_output(render_result_summary(summary))
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "compare":
             summary = load_results(repo_root / "data" / "agentic_outputs")
             emit_output(render_compare_summary(summary))
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "download":
             preset = command.args[0] if command.args else "models-core"
             emit_output(
                 f"Recommended external command:\npython {repo_root / 'scripts' / 'download_agentic_assets.py'} --preset {preset}"
             )
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "build" and command.args == ["mini"]:
             emit_output(
                 f"Recommended external command:\npython {repo_root / 'scripts' / 'build_ucf_crime_mini_subset.py'}"
             )
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "run" and command.args == ["mini"]:
             overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
@@ -117,6 +128,7 @@ def run_repl_session(
             summary = orchestrator.run(request, capture_progress=True, monitor=monitor)
             emit_output(render_progress_snapshot(monitor.snapshot()))
             emit_output(render_run_summary(summary))
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "run" and command.args == ["full"]:
             overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
@@ -132,6 +144,7 @@ def run_repl_session(
             summary = orchestrator.run(request, capture_progress=True, monitor=monitor)
             emit_output(render_progress_snapshot(monitor.snapshot()))
             emit_output(render_run_summary(summary))
+            overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
         if command.name == "exit":
             return 0
