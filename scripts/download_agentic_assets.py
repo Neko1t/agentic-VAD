@@ -32,6 +32,7 @@ class Asset:
     manual_url: str | None = None
     gated: bool = False
     markers: tuple[str, ...] = ()
+    completion_marker: str | None = None
 
 
 ASSETS: tuple[Asset, ...] = (
@@ -45,7 +46,7 @@ ASSETS: tuple[Asset, ...] = (
         note="Used by EmbeddingBuilder. The code can fall back to a deterministic local embedder, but real retrieval quality depends on this model.",
         modelscope_repo="BAAI/bge-base-en-v1.5",
         hf_repo="BAAI/bge-base-en-v1.5",
-        markers=("libs/embeddings/bge-base-en-v1.5",),
+        completion_marker=".asset_status/bge-base-en-v1.5.done",
     ),
     Asset(
         asset_id="videollama3-7b",
@@ -57,7 +58,7 @@ ASSETS: tuple[Asset, ...] = (
         note="Planned replacement for the current caption-json VLM path. Large download.",
         modelscope_repo="DAMO-NLP-SG/VideoLLaMA3-7B",
         hf_repo="DAMO-NLP-SG/VideoLLaMA3-7B",
-        markers=("libs/videollama3/VideoLLaMA3-7B",),
+        completion_marker=".asset_status/videollama3-7b.done",
     ),
     Asset(
         asset_id="llama-3.1-8b-instruct",
@@ -70,7 +71,7 @@ ASSETS: tuple[Asset, ...] = (
         modelscope_repo="LLM-Research/Meta-Llama-3.1-8B-Instruct",
         hf_repo="meta-llama/Llama-3.1-8B-Instruct",
         gated=True,
-        markers=("libs/llama/llama3.1-8b",),
+        completion_marker=".asset_status/llama-3.1-8b-instruct.done",
     ),
     Asset(
         asset_id="preprocessed-annotation-bundle",
@@ -78,9 +79,8 @@ ASSETS: tuple[Asset, ...] = (
         category="support-data",
         target="data",
         required_now=True,
-        mode="download",
+        mode="manual",
         note="README-provided Google Drive package for project-compatible annotations and related preprocessing artifacts.",
-        gdrive_url="https://drive.google.com/file/d/1jULt7PKZDTronu4eqiMwCqteKRjjVlmn/view?usp=sharing",
         markers=(
             "data/ucf_crime/annotations/test.txt",
             "data/ucf_crime/annotations/Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
@@ -225,22 +225,12 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _path_has_content(path: Path) -> bool:
-    if not path.exists():
-        return False
-    if path.is_file():
-        return path.stat().st_size > 0
-    try:
-        next(path.iterdir())
-    except StopIteration:
-        return False
-    return True
-
-
 def asset_ready(asset: Asset, root: Path) -> bool:
+    if asset.completion_marker is not None:
+        return (root / asset.completion_marker).exists()
     if asset.markers:
-        return all(_path_has_content(root / marker) for marker in asset.markers)
-    return _path_has_content(root / asset.target)
+        return all((root / marker).exists() for marker in asset.markers)
+    return (root / asset.target).exists()
 
 
 def download_modelscope(asset: Asset, dest: Path, token: str | None) -> None:
@@ -319,6 +309,10 @@ def perform_download(asset: Asset, args: argparse.Namespace) -> str:
 
     if asset.mode == "download" and asset.gdrive_url:
         download_gdrive_bundle(asset, root)
+        if asset.completion_marker is not None:
+            marker = root / asset.completion_marker
+            ensure_dir(marker.parent)
+            marker.write_text("downloaded\n", encoding="utf-8")
         return f"Downloaded support bundle into {target}"
 
     if asset.mode == "download":
@@ -331,6 +325,10 @@ def perform_download(asset: Asset, args: argparse.Namespace) -> str:
             download_hf_mirror(asset, target, args.hf_token)
         else:
             raise RuntimeError(f"Unsupported source: {source}")
+        if asset.completion_marker is not None:
+            marker = root / asset.completion_marker
+            ensure_dir(marker.parent)
+            marker.write_text(f"{asset.asset_id}\n", encoding="utf-8")
         return f"Downloaded to {target} via {source}"
 
     raise RuntimeError(f"Unsupported mode: {asset.mode}")
