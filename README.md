@@ -9,20 +9,53 @@
 
 This is the code implementation for the paper [A Unified Reasoning Framework for Holistic Zero-Shot Video Anomaly Analysis (NeurIPS 2025)](https://openreview.net/pdf?id=Qla5PqFL0s). We thank the previous work for their excellent [codebase](https://github.com/lucazanella/lavad).
 
-Quick repository entrypoints:
+This repository now serves two purposes:
 
-- `PROJECT_OVERVIEW.md`: fast project summary for a new session
-- `agent.md`: session handoff and current engineering notes
+1. Preserve the original URF-HVAA baseline workflow
+2. Develop an `agentic-vad` branch of work that restructures temporal video
+   anomaly detection into a lightweight multi-agent system
+
+If you are new to this repository, read it as an agentic VAD project first,
+and treat the original paper workflow as the baseline path we compare against.
+
+## Quick Start
+
+Fast repository entrypoints:
+
+- `PROJECT_OVERVIEW.md`: fastest project summary for a new session
+- `agent.md`: current engineering handoff and architectural notes
 - `docs/scripts_guide.md`: script usage index
 - `docs/agentic_vad_workflow.md`: workflow/runtime design
+- `docs/original_project_evaluation.md`: baseline evaluation notes
 
-## Agentic VAD Prototype
+## Current Focus: Agentic VAD
 
-This repository now also includes an agentic VAD prototype under `src/pipelines/run_agentic_vad.py`, with:
+The current active engineering direction is an `agentic-vad` prototype under
+`src/pipelines/run_agentic_vad.py` and `src/pipelines/run_agentic_workflow.py`.
 
-- `PerceptionAgent` for multimodal observation extraction
-- `StoryMemoryAgent` for rolling summaries and retrieval-guided calibration
-- `CaseMemoryStore` and `PatternMemoryStore` for persistent memory
+Core roles:
+
+- `PerceptionAgent`: local observation extraction and first-pass scoring
+- `StoryMemoryAgent`: rolling context, retrieval, calibration, and memory-write
+  proposals
+- `CaseMemoryStore` / `PatternMemoryStore`: persistent memory components
+
+Current constraints:
+
+- The default runtime still uses precomputed caption JSON files rather than a
+  real online VLM backend.
+- Real model downloads do not automatically mean the runtime is already wired
+  to consume them.
+- The workflow already exports original-eval-compatible temporal scores, so it
+  can be compared directly with the author baseline using `ROC AUC / PR AUC`.
+
+## Recommended Reading Order
+
+1. `PROJECT_OVERVIEW.md`
+2. `agent.md`
+3. `docs/scripts_guide.md`
+4. `docs/agentic_vad_workflow.md`
+5. `docs/original_project_evaluation.md`
 
 ## Setup
 
@@ -34,6 +67,35 @@ Simply run following commands:
 conda env create -f environment.yml
 conda activate VAA
 ```
+
+You can also install dependencies directly:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Agentic Workflow Entry Points
+
+Main shell entrypoints now live under `scripts/`:
+
+- `scripts/run_agentic_workflow.sh`
+- `scripts/run_agentic_workflow_ucf_crime.sh`
+- `scripts/run_agentic_workflow_xd_violence.sh`
+- `scripts/download_agentic_assets.sh`
+- `scripts/build_ucf_crime_mini_subset.sh`
+
+Examples:
+
+```bash
+./scripts/download_agentic_assets.sh --list --preset bootstrap
+./scripts/build_ucf_crime_mini_subset.sh
+./scripts/run_agentic_workflow_ucf_crime.sh --stage pipeline --stage metrics --no-use-chroma
+```
+
+For a detailed script index, see:
+
+- `docs/scripts_guide.md`
+- `docs/run_agentic_workflow_linux.md`
 
 ### Dataset
 
@@ -60,8 +122,22 @@ Before running the code, make sure you have downloaded the raw videos under ``./
         ...
 ```
 
-## Environment
-Install the Python dependencies with ``pip install -r requirements.txt``. For experiment using simplest backbone model ``VideoLLaMA3-7B, Llama3.1-8B-Instruct``, we recommend to use a machine with at least one RTX 3090 GPU.
+For the current agentic workflow, the most important runtime assets are:
+
+- annotations
+- precomputed captions
+- optional baseline refined scores
+
+Raw videos and extracted frames become necessary when you want to:
+
+- regenerate captions
+- rebuild subsets from videos
+- integrate a real online VLM backend
+
+## Model Notes
+
+For experiments using `VideoLLaMA3-7B` and `Llama3.1-8B-Instruct`, we
+recommend at least one RTX 3090-class GPU.
 
 For Llama3.1-8B-Instruct model, you need to get the model checkpoint from [here](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main/original) . The checkpoint file ```consolidated.00.pth``` should have a SHA256="ab33d910f405204e5d388bc3521503584800461dc96808e287821dd451c1edac". (You can also download the file from [here](https://www.modelscope.cn/models/LLM-Research/Meta-Llama-3.1-8B-Instruct/files).) Our code assumes Llama3 repo is placed under ``./libs/``. And the ``.pth`` files for model checkpoints is placed inside the repo as ``./libs/llama/llama3.1-8b``.
 
@@ -80,9 +156,25 @@ That is, we expect model code/files should be organized as:
             ...
 ```
 
+## Current Mini-Experiment Pattern
 
+For fast smoke validation:
 
-## Video Anomaly Detection
+1. Prepare annotations / captions / baseline scores
+2. Build a small UCF-Crime subset
+3. Run:
+
+```bash
+./scripts/run_agentic_workflow.sh --stage pipeline --stage metrics --stage baseline-metrics --stage compare --no-use-chroma
+```
+
+Outputs will be written under:
+
+```text
+data/agentic_outputs/
+```
+
+## Original Baseline Workflow
 
 We have provided the score/caption files for reproducing main experiments in our paper, e.g., for ucf_crime, you should see:
  - Extracted video clip captions under ``./data/ucf_crime/captions/video_llama3_json_results``
