@@ -409,6 +409,8 @@ LLM-based scorer, must follow these rules to reduce GPU memory risk:
   `libs/`.
 - Decide whether to add a real baseline `scores_dir` preset for automated
   comparison against the original author pipeline on each dataset.
+- When adding a new script or executable entrypoint, update `scripts_guide.md`
+  in the same change so the usage guide stays current.
 
 After this, the project will have a clean agent communication layer suitable
 for real VLM backend integration, LLM-based story reasoning, session memory,
