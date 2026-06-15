@@ -137,20 +137,24 @@ class AgenticVADApp(App):  # type: ignore[misc]
         self.preferred_dataset = preferred_dataset
         self.home_state = collect_home_state(repo_root=repo_root, preferred_dataset=preferred_dataset)
         self.thread_factory = lambda target, name, daemon: threading.Thread(target=target, name=name, daemon=daemon)
-        self.is_running = False
+        self._is_running = False
         self.active_monitor: WorkflowMonitor | None = None
         self.run_workflow_callable = self.run_default_workflow
-        self.home_state["workspace"]["is_running"] = self.is_running
+        self.home_state["workspace"]["is_running"] = self._is_running
         self.sections = build_home_sections(
             snapshot=self.home_state["snapshot"],
             workspace=self.home_state["workspace"],
         )
 
+    @property
+    def run_active(self) -> bool:
+        return self._is_running
+
     BINDINGS = [("r", "refresh", "Refresh")]
 
     def refresh_home_state(self) -> None:
         self.home_state = collect_home_state(repo_root=self.repo_root, preferred_dataset=self.preferred_dataset)
-        self.home_state["workspace"]["is_running"] = self.is_running
+        self.home_state["workspace"]["is_running"] = self._is_running
         self.sections = build_home_sections(
             snapshot=self.home_state["snapshot"],
             workspace=self.home_state["workspace"],
@@ -175,7 +179,7 @@ class AgenticVADApp(App):  # type: ignore[misc]
         if self.active_monitor is None:
             return
         self.home_state["workspace"]["live_progress"] = self.active_monitor.snapshot()
-        self.home_state["workspace"]["is_running"] = self.is_running
+        self.home_state["workspace"]["is_running"] = self._is_running
         self.sections = build_home_sections(
             snapshot=self.home_state["snapshot"],
             workspace=self.home_state["workspace"],
@@ -188,7 +192,7 @@ class AgenticVADApp(App):  # type: ignore[misc]
     def apply_run_summary(self, summary: dict[str, Any]) -> None:
         workspace = self.home_state["workspace"]
         workspace["live_progress"] = summary.get("progress")
-        workspace["is_running"] = self.is_running
+        workspace["is_running"] = self._is_running
         compare = summary.get("compare") or {}
         workflow_summary_path = summary.get("workflow_summary_path")
         workspace["recent_result"] = {
@@ -203,9 +207,9 @@ class AgenticVADApp(App):  # type: ignore[misc]
         )
 
     def mark_run_started(self, workflow_kind: str) -> None:
-        self.is_running = True
+        self._is_running = True
         workspace = self.home_state["workspace"]
-        workspace["is_running"] = self.is_running
+        workspace["is_running"] = self._is_running
         workspace["live_progress"] = {
             "latest": {
                 "stage": "workflow",
@@ -221,16 +225,16 @@ class AgenticVADApp(App):  # type: ignore[misc]
         )
 
     def complete_background_run(self, summary: dict[str, Any]) -> None:
-        self.is_running = False
+        self._is_running = False
         self.active_monitor = None
-        self.home_state["workspace"]["is_running"] = self.is_running
+        self.home_state["workspace"]["is_running"] = self._is_running
         self.apply_run_summary(summary)
 
     def fail_background_run(self, exc: Exception) -> None:
-        self.is_running = False
+        self._is_running = False
         self.active_monitor = None
         workspace = self.home_state["workspace"]
-        workspace["is_running"] = self.is_running
+        workspace["is_running"] = self._is_running
         workspace["live_progress"] = {
             "latest": {
                 "stage": "workflow",

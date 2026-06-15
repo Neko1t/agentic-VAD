@@ -41,7 +41,7 @@ def test_start_background_run_uses_thread_factory_and_marks_running(tmp_path: Pa
     result = app.start_background_run("mini")
 
     assert result is None
-    assert app.is_running is True
+    assert app.run_active is True
     assert recorded["name"] == "agentic-vad-mini"
     assert recorded["daemon"] is True
     assert recorded["started"] is True
@@ -52,7 +52,7 @@ def test_complete_background_run_clears_running_and_updates_sections(tmp_path: P
 
     repo_root = _prepare_app_root(tmp_path)
     app = AgenticVADApp(repo_root=repo_root, preferred_dataset="ucf_crime")
-    app.is_running = True
+    app._is_running = True
 
     summary = {
         "workflow_type": "mini",
@@ -66,7 +66,7 @@ def test_complete_background_run_clears_running_and_updates_sections(tmp_path: P
 
     app.complete_background_run(summary)
 
-    assert app.is_running is False
+    assert app.run_active is False
     assert "status=ok" in app.sections["live_progress"]
 
 
@@ -75,9 +75,9 @@ def test_fail_background_run_clears_running_and_records_error(tmp_path: Path):
 
     repo_root = _prepare_app_root(tmp_path)
     app = AgenticVADApp(repo_root=repo_root, preferred_dataset="ucf_crime")
-    app.is_running = True
+    app._is_running = True
 
     app.fail_background_run(RuntimeError("boom"))
 
-    assert app.is_running is False
+    assert app.run_active is False
     assert "boom" in app.sections["live_progress"]
