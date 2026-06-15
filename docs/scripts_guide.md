@@ -56,6 +56,12 @@ Notes:
   app layer, reusing the same orchestrator and default run-request builders.
 - Those app-level run actions now use a thread-backed non-blocking wrapper so
   home-state sections can reflect running, completed, and failed states.
+- When the Textual runtime is active, the app also registers a periodic refresh
+  loop so the `live_progress` section can update automatically from the active
+  workflow monitor.
+- The home screen now also exposes explicit run-state and compare-summary
+  sections so users can see whether the system is idle/running and how the most
+  recent agentic-vs-baseline comparison turned out.
 
 ## 2. Asset Download
 

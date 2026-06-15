@@ -72,7 +72,11 @@ Key packages:
     non-blocking shell so the UI-side state can mark running/completed/failed
     without treating the main app loop as a blocking batch command. The current
     app also wires an external `WorkflowMonitor` through orchestrator execution
-    and can poll that monitor back into the `live_progress` section.
+    and can poll that monitor back into the `live_progress` section. The
+    Textual path now also registers a periodic refresh loop for these sections.
+    The home screen now exposes explicit run-state and compare-summary panels,
+    and the run controls are rendered as actual buttons instead of text-only
+    hints.
   - `orchestrator.py`: thin adapter that routes the unified entry into the
     existing workflow and helper scripts.
   - `results.py`: reads persisted workflow/comparison summaries.

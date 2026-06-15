@@ -28,6 +28,28 @@ def build_recent_result_rows(recent_result: dict[str, Any] | None) -> list[tuple
     return rows
 
 
+def build_compare_summary_rows(recent_result: dict[str, Any] | None) -> list[tuple[str, str]]:
+    if recent_result is None:
+        return [("status", "no comparison summary available")]
+    comparison = recent_result.get("comparison") or {}
+    diff = comparison.get("diff") or {}
+    rows: list[tuple[str, str]] = [("status", str(comparison.get("status") or recent_result.get("status") or "unknown"))]
+    for metric_name in ("roc_auc", "pr_auc"):
+        metric_payload = diff.get(metric_name)
+        if isinstance(metric_payload, dict):
+            agentic = metric_payload.get("agentic")
+            baseline = metric_payload.get("baseline")
+            delta = metric_payload.get("delta")
+            if delta is not None:
+                rows.append(
+                    (
+                        metric_name,
+                        f"agentic={agentic} | baseline={baseline} | delta={float(delta):.4f}",
+                    )
+                )
+    return rows
+
+
 def render_dashboard(*, snapshot: ProjectStatusSnapshot, workspace: dict[str, Any]) -> str:
     console = Console(record=True, width=120, legacy_windows=False, file=StringIO())
 
@@ -64,6 +86,13 @@ def render_dashboard(*, snapshot: ProjectStatusSnapshot, workspace: dict[str, An
     for key, value in build_recent_result_rows(recent_result):
         result_table.add_row(key, value)
     console.print(result_table)
+
+    compare_table = Table(title="Compare Summary", show_lines=True)
+    compare_table.add_column("Field")
+    compare_table.add_column("Value")
+    for key, value in build_compare_summary_rows(recent_result):
+        compare_table.add_row(key, value)
+    console.print(compare_table)
 
     actions = workspace.get("required_actions", [])
     if not actions:

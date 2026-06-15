@@ -33,10 +33,12 @@ def test_build_home_sections_creates_named_text_blocks():
 
     assert set(sections.keys()) == {
         "overview",
+        "run_state",
         "project_status",
         "dataset_readiness",
         "model_assets",
         "recent_results",
+        "compare_summary",
         "live_progress",
         "required_actions",
         "suggested_commands",
@@ -44,4 +46,5 @@ def test_build_home_sections_creates_named_text_blocks():
     assert "python=3.13.5" in sections["project_status"]
     assert "ucf_crime" in sections["dataset_readiness"]
     assert "latest comparison" in sections["recent_results"]
+    assert "status" in sections["compare_summary"]
     assert "pipeline" in sections["live_progress"]

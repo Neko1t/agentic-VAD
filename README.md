@@ -122,7 +122,9 @@ Current scope of the unified entry:
 The unified home screen now exists in an initial form. It currently uses a
 dashboard-style terminal view, and the code now includes a Textual-capable
 home-screen path with refreshable sections, live-progress display, and initial
-mini/full run controls behind the same command surface.
+mini/full run controls behind the same command surface. The Textual path now
+also has an auto-refresh loop for live progress when that runtime is active,
+plus explicit run-state and comparison-summary sections.
 
 ### Dataset
 
