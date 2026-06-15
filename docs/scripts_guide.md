@@ -10,7 +10,54 @@ them quickly.
 - `agentic-vad` workflow scripts expect captions to already exist unless you
   replace the VLM backend.
 
-## 1. Asset Download
+## 1. Unified Entry
+
+### `agentic_vad.py`
+
+Purpose:
+
+- Unified project entrypoint for the ongoing TUI consolidation work.
+- Gives the repository one top-level command surface while reusing the current
+  workflow implementation under `src/pipelines/`.
+
+Typical usage:
+
+```bash
+python agentic_vad.py doctor --help
+python agentic_vad.py run mini --help
+python agentic_vad.py run full --help
+python agentic_vad.py run stage pipeline --help
+python agentic_vad.py results show
+```
+
+Current commands:
+
+- `doctor`: inspect whether key inputs and dependencies are in place
+- `run mini`: run the unified mini-experiment path
+- `run full`: run the unified full-experiment path
+- `run stage`: run selected workflow stages only
+- `assets download`: call the asset downloader
+- `dataset build-mini`: call the mini subset builder
+- `results show`: read persisted result summaries
+
+Notes:
+
+- This is the new recommended root-level entrypoint.
+- Running `python agentic_vad.py` now opens the unified home screen.
+- When `textual` is available, this entry can evolve into the richer TUI path.
+- The current implementation still keeps a text-dashboard fallback so server
+  environments remain usable.
+- The Textual home screen currently supports structured sections and refreshable
+  home-state rebuilding, while command execution still happens through the
+  existing CLI subcommands.
+- The TUI-side state model now has a live-progress section so future workflow
+  execution can surface stage/tool activity in the same home experience.
+- The current Textual app also includes initial mini/full run actions at the
+  app layer, reusing the same orchestrator and default run-request builders.
+- Those app-level run actions now use a thread-backed non-blocking wrapper so
+  home-state sections can reflect running, completed, and failed states.
+
+## 2. Asset Download
 
 ### `download_agentic_assets.sh`
 
@@ -56,7 +103,7 @@ Key presets:
 - `models-all`: embedding + VideoLLaMA3 + Llama 3.1 8B
 - `bootstrap`: annotation bundle + UCF-Crime placeholders + embedding model
 
-## 2. Agentic Workflow
+## 3. Agentic Workflow
 
 ### `build_ucf_crime_mini_subset.sh`
 
@@ -178,7 +225,7 @@ Typical usage:
 python scripts/run_agentic_workflow.py --help
 ```
 
-## 3. Original / Baseline Evaluation
+## 4. Original / Baseline Evaluation
 
 ### `scripts/query_llm_vad.sh`
 
@@ -258,7 +305,7 @@ Purpose:
 
 - Evaluate MSAD-style data with the original metric pipeline.
 
-## 4. Frame Extraction
+## 5. Frame Extraction
 
 ### `scripts/extract_frames.sh`
 
@@ -276,7 +323,7 @@ Notes:
 
 - Edit dataset paths inside the file before running.
 
-## 5. Python Utilities Used Directly
+## 6. Python Utilities Used Directly
 
 These are script-like entrypoints but are usually called through the workflow.
 
@@ -296,7 +343,7 @@ These are script-like entrypoints but are usually called through the workflow.
 - `src/pipelines/promote_case_memory.py`
 - `src/pipelines/extract_patterns_offline.py`
 
-## 6. Maintenance Rule
+## 7. Maintenance Rule
 
 Whenever a new script or executable entrypoint is added, update this file in
 the same change so the usage guide stays complete.

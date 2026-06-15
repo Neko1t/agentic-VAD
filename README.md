@@ -22,6 +22,7 @@ and treat the original paper workflow as the baseline path we compare against.
 
 Fast repository entrypoints:
 
+- `agentic_vad.py`: new unified project entrypoint
 - `PROJECT_OVERVIEW.md`: fastest project summary for a new session
 - `agent.md`: current engineering handoff and architectural notes
 - `docs/scripts_guide.md`: script usage index
@@ -96,6 +97,32 @@ For a detailed script index, see:
 
 - `docs/scripts_guide.md`
 - `docs/run_agentic_workflow_linux.md`
+
+### Unified Project Entry
+
+The repository now also exposes a single Python entrypoint for the ongoing
+workflow unification effort:
+
+```bash
+python agentic_vad.py doctor --help
+python agentic_vad.py run mini --help
+python agentic_vad.py results show
+```
+
+Current scope of the unified entry:
+
+- `doctor`: check whether the main experiment inputs exist
+- `run mini/full/stage`: route into the agentic workflow
+- `assets download`: delegate to the asset downloader
+- `dataset build-mini`: delegate to the mini subset builder
+- `results show`: read persisted workflow/comparison summaries
+- root home screen: show a dashboard-style project overview when no subcommand
+  is provided
+
+The unified home screen now exists in an initial form. It currently uses a
+dashboard-style terminal view, and the code now includes a Textual-capable
+home-screen path with refreshable sections, live-progress display, and initial
+mini/full run controls behind the same command surface.
 
 ### Dataset
 

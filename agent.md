@@ -51,6 +51,32 @@ Key packages:
   - `progress.py`: runtime progress event schema plus single-line Rich progress
     reporter used by the end-to-end workflow runner.
 
+- `src/app`
+  - `cli.py`: new unified project entrypoint surface under `agentic_vad.py`.
+    It currently exposes `doctor`, `run mini/full/stage`, `assets download`,
+    `dataset build-mini`, and `results show`.
+  - `status.py`: repository/workspace status detection for input paths, dataset
+    readiness, asset markers, and recent persisted results.
+  - `dashboard.py`: text dashboard renderer used when running
+    `python agentic_vad.py` with no subcommand.
+  - `tui_app.py`: home-screen launcher with a Textual-capable path plus a
+    text-dashboard fallback for environments where `textual` is unavailable.
+    The current Textual app now has structured home sections and a refresh
+    action, while deeper experiment control still routes through CLI commands.
+    Home sections now also have a `live_progress` slot intended for workflow
+    stage/activity summaries. The app also has the first synchronous
+    `run_default_workflow(...)` path that can execute a default mini/full run
+    and push the resulting progress snapshot back into the home sections.
+    Initial `action_run_mini` / `action_run_full` hooks now exist as the first
+    app-level run controls. These controls now launch through a thread-backed
+    non-blocking shell so the UI-side state can mark running/completed/failed
+    without treating the main app loop as a blocking batch command. The current
+    app also wires an external `WorkflowMonitor` through orchestrator execution
+    and can poll that monitor back into the `live_progress` section.
+  - `orchestrator.py`: thin adapter that routes the unified entry into the
+    existing workflow and helper scripts.
+  - `results.py`: reads persisted workflow/comparison summaries.
+
 - `src/tools`
   - `vlm_tool.py`: currently reads precomputed captions and extracts simple
     entities/actions. It should later become a backend-based VLM adapter.
@@ -79,6 +105,9 @@ Key packages:
 - `scripts/`
   - Shell wrappers, dataset presets, download helpers, and small operational
     entrypoints for Linux / server use.
+- `agentic_vad.py`
+  - Root-level unified entrypoint. This is the new recommended top-level entry
+    for project use while the TUI consolidation work continues.
 
 ## Current Prototype Behavior
 
@@ -146,10 +175,24 @@ Implemented in the first development pass:
   optional baseline comparison.
 - `pytest.ini` now sets `pythonpath = .` and uses a project-local pytest temp
   directory.
+- The repository now has a first unified application layer:
+  - `python agentic_vad.py` shows a dashboard-like terminal home screen.
+  - `python agentic_vad.py doctor ...` prints machine-readable status JSON.
+  - `python agentic_vad.py run mini/full/stage ...` routes into the existing
+    workflow with quiet JSON output suitable for future TUI wrapping.
+  - `python agentic_vad.py results show ...` loads persisted summaries.
+  - `python agentic_vad.py assets download ...` and
+    `python agentic_vad.py dataset build-mini ...` delegate to the existing
+    operational scripts.
 
 Remaining limitation:
 
 - A real VideoLLaMA backend is not implemented yet.
+- The current unified home screen is a text dashboard, not a full Textual
+  interactive TUI yet.
+- A `tui_app.py` launcher now exists and keeps the home screen behind one
+  adapter boundary, so we can upgrade from text dashboard to richer TUI
+  interaction without changing the public `agentic_vad.py` entrypoint.
 
 ## Target Architecture
 
@@ -412,6 +455,10 @@ LLM-based scorer, must follow these rules to reduce GPU memory risk:
 
 ## Near-Term TODO
 
+- Replace the current text dashboard with a richer interactive Textual TUI,
+  while keeping the same unified `agentic_vad.py` command surface.
+- Expand status detection from path existence into stronger readiness checks for
+  done markers, model wiring, stage resume state, and result tables.
 - Add real `VideoLLaMABackend` once local model files are available under
   `libs/`.
 - Decide whether to add a real baseline `scores_dir` preset for automated
