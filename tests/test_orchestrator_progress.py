@@ -52,3 +52,31 @@ def test_orchestrator_run_can_return_progress_snapshot(tmp_path: Path):
     assert "progress" in summary
     assert summary["progress"]["latest"]["stage"] in {"workflow", "compare", "metrics", "pipeline", "baseline_metrics"}
     assert external_monitor.snapshot()["latest"] is not None
+
+
+def test_build_default_run_request_uses_mini_paths(tmp_path: Path):
+    from src.app import orchestrator
+    from src.app.models import WorkflowType
+
+    request = orchestrator.build_default_run_request(
+        repo_root=tmp_path,
+        preferred_dataset="ucf_crime",
+        workflow_type=WorkflowType.MINI,
+    )
+
+    assert request.workflow_type == WorkflowType.MINI
+    assert str(request.root_path).endswith("data\\ucf_crime_mini\\frames") or str(request.root_path).endswith("data/ucf_crime_mini/frames")
+
+
+def test_build_default_run_request_uses_full_paths(tmp_path: Path):
+    from src.app import orchestrator
+    from src.app.models import WorkflowType
+
+    request = orchestrator.build_default_run_request(
+        repo_root=tmp_path,
+        preferred_dataset="ucf_crime",
+        workflow_type=WorkflowType.FULL,
+    )
+
+    assert request.workflow_type == WorkflowType.FULL
+    assert str(request.root_path).endswith("data\\ucf_crime\\frames") or str(request.root_path).endswith("data/ucf_crime/frames")

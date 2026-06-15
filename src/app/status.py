@@ -175,3 +175,35 @@ def build_workspace_snapshot(*, repo_root: Path, preferred_dataset: str = "ucf_c
         "required_actions": required_actions,
         "recent_result": recent_result,
     }
+
+
+def build_repl_overview(*, repo_root: Path, preferred_dataset: str = "ucf_crime") -> dict[str, object]:
+    workspace = build_workspace_snapshot(repo_root=repo_root, preferred_dataset=preferred_dataset)
+    recommended_commands: list[str] = []
+    missing_items: list[str] = []
+
+    if not any(item["ready"] for item in workspace["models"]):
+        missing_items.append("core model assets are missing")
+        recommended_commands.append("python agentic_vad.py assets download --preset models-core")
+
+    if not workspace["mini_ready"]:
+        missing_items.append("mini dataset is not ready")
+        recommended_commands.append("python agentic_vad.py dataset build-mini")
+    else:
+        recommended_commands.append("run mini")
+
+    if workspace["full_ready"]:
+        recommended_commands.append("run full")
+    else:
+        missing_items.append("full dataset is not ready")
+
+    return {
+        "preferred_dataset": preferred_dataset,
+        "mini_ready": workspace["mini_ready"],
+        "full_ready": workspace["full_ready"],
+        "models": workspace["models"],
+        "datasets": workspace["datasets"],
+        "missing_items": missing_items,
+        "recommended_commands": recommended_commands,
+        "recent_result": workspace.get("recent_result"),
+    }

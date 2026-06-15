@@ -6,11 +6,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from src.app.models import ProjectStatusSnapshot, ResultSummary, RunRequest
+from src.app.models import ProjectStatusSnapshot, ResultSummary, RunRequest, WorkflowType
 from src.app.run_monitor import QueueProgressReporter, WorkflowMonitor
 from src.app.results import load_results
 from src.app.status import build_status_snapshot
 from src.app.workflows import resolve_workflow_stages
+from src.core.schemas import RunMode
 from src.pipelines.run_agentic_workflow import run_workflow
 from src.runtime.progress import NullProgressReporter
 
@@ -31,6 +32,30 @@ def doctor(
         temporal_annotation_file=temporal_annotation_file,
         baseline_scores_dir=baseline_scores_dir,
         output_dir=output_dir,
+    )
+
+
+def build_default_run_request(
+    *,
+    repo_root: Path,
+    preferred_dataset: str = "ucf_crime",
+    workflow_type: WorkflowType = WorkflowType.MINI,
+) -> RunRequest:
+    dataset_name = f"{preferred_dataset}_mini" if workflow_type == WorkflowType.MINI else preferred_dataset
+    return RunRequest(
+        workflow_type=workflow_type,
+        root_path=repo_root / "data" / dataset_name / "frames",
+        annotation_file_path=repo_root / "data" / dataset_name / "annotations" / "test.txt",
+        captions_dir=repo_root / "data" / dataset_name / "captions" / "video_llama3_json_results",
+        output_dir=repo_root / "data" / "agentic_outputs" / dataset_name,
+        memory_dir=repo_root / "data" / "agentic_memory" / dataset_name,
+        temporal_annotation_file=repo_root
+        / "data"
+        / dataset_name
+        / "annotations"
+        / "Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
+        baseline_scores_dir=repo_root / "data" / dataset_name / "refined_scores" / "videollama3",
+        run_mode=RunMode.ONLINE_INFERENCE,
     )
 
 

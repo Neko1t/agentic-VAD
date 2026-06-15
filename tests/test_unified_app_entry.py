@@ -12,6 +12,25 @@ def test_root_entrypoint_module_exposes_cli_app():
     assert hasattr(agentic_vad, "app")
 
 
+def test_root_callback_launches_repl_when_no_subcommand(monkeypatch):
+    from src.app.cli import app
+
+    runner = CliRunner()
+    called: dict[str, object] = {}
+
+    def _run_repl_session(*, repo_root, preferred_dataset="ucf_crime", emit_output=print):
+        called["repo_root"] = repo_root
+        called["preferred_dataset"] = preferred_dataset
+        return 0
+
+    monkeypatch.setattr("src.app.cli.run_repl_session", _run_repl_session)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert called["preferred_dataset"] == "ucf_crime"
+
+
 def test_doctor_command_reports_missing_assets(tmp_path: Path):
     from src.app.cli import app
 

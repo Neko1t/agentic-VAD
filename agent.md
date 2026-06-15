@@ -51,14 +51,15 @@ Key packages:
   - `progress.py`: runtime progress event schema plus single-line Rich progress
     reporter used by the end-to-end workflow runner.
 
-- `src/app`
   - `cli.py`: new unified project entrypoint surface under `agentic_vad.py`.
     It currently exposes `doctor`, `run mini/full/stage`, `assets download`,
-    `dataset build-mini`, and `results show`.
+    `dataset build-mini`, and `results show`. The default no-subcommand entry
+    now launches a persistent Rich-based REPL console that auto-runs doctor on
+    launch and accepts short shell-like commands.
   - `status.py`: repository/workspace status detection for input paths, dataset
-    readiness, asset markers, and recent persisted results.
-  - `dashboard.py`: text dashboard renderer used when running
-    `python agentic_vad.py` with no subcommand.
+    readiness, asset markers, recommended commands, and recent persisted
+    results.
+  - `dashboard.py`: text dashboard renderer used by the fallback status view.
   - `tui_app.py`: home-screen launcher with a Textual-capable path plus a
     text-dashboard fallback for environments where `textual` is unavailable.
     The current Textual app now has structured home sections and a refresh
@@ -76,7 +77,10 @@ Key packages:
     Textual path now also registers a periodic refresh loop for these sections.
     The home screen now exposes explicit run-state and compare-summary panels,
     and the run controls are rendered as actual buttons instead of text-only
-    hints.
+    hints. A new REPL-oriented console design is now being introduced so the
+    root entry can become a keyboard-first terminal shell with startup doctor
+    output, command recommendations, live progress, and automatic result
+    summaries.
   - `orchestrator.py`: thin adapter that routes the unified entry into the
     existing workflow and helper scripts.
   - `results.py`: reads persisted workflow/comparison summaries.
@@ -180,23 +184,27 @@ Implemented in the first development pass:
 - `pytest.ini` now sets `pythonpath = .` and uses a project-local pytest temp
   directory.
 - The repository now has a first unified application layer:
-  - `python agentic_vad.py` shows a dashboard-like terminal home screen.
+  - `python agentic_vad.py` opens the REPL console.
   - `python agentic_vad.py doctor ...` prints machine-readable status JSON.
   - `python agentic_vad.py run mini/full/stage ...` routes into the existing
-    workflow with quiet JSON output suitable for future TUI wrapping.
+    workflow with quiet JSON output suitable for direct scripting.
   - `python agentic_vad.py results show ...` loads persisted summaries.
   - `python agentic_vad.py assets download ...` and
     `python agentic_vad.py dataset build-mini ...` delegate to the existing
     operational scripts.
+- The next UI step is a persistent REPL console:
+  - launch via `python agentic_vad.py`
+  - auto-run doctor/status on startup
+  - show missing components and recommended commands
+  - accept short commands like `run mini`, `run full`, and `results`
+  - render live progress and completion summaries in-terminal
 
 Remaining limitation:
 
 - A real VideoLLaMA backend is not implemented yet.
-- The current unified home screen is a text dashboard, not a full Textual
-  interactive TUI yet.
-- A `tui_app.py` launcher now exists and keeps the home screen behind one
-  adapter boundary, so we can upgrade from text dashboard to richer TUI
-  interaction without changing the public `agentic_vad.py` entrypoint.
+- The REPL console is intentionally CLI-like rather than mouse-driven.
+- `tui_app.py` remains as legacy fallback/support code while the REPL becomes
+  the default control surface.
 
 ## Target Architecture
 

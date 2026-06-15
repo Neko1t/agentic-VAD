@@ -16,13 +16,14 @@ them quickly.
 
 Purpose:
 
-- Unified project entrypoint for the ongoing TUI consolidation work.
+- Unified project entrypoint for the ongoing REPL-console consolidation work.
 - Gives the repository one top-level command surface while reusing the current
   workflow implementation under `src/pipelines/`.
 
 Typical usage:
 
 ```bash
+python agentic_vad.py
 python agentic_vad.py doctor --help
 python agentic_vad.py run mini --help
 python agentic_vad.py run full --help
@@ -43,25 +44,35 @@ Current commands:
 Notes:
 
 - This is the new recommended root-level entrypoint.
-- Running `python agentic_vad.py` now opens the unified home screen.
-- When `textual` is available, this entry can evolve into the richer TUI path.
-- The current implementation still keeps a text-dashboard fallback so server
-  environments remain usable.
-- The Textual home screen currently supports structured sections and refreshable
-  home-state rebuilding, while command execution still happens through the
-  existing CLI subcommands.
-- The TUI-side state model now has a live-progress section so future workflow
-  execution can surface stage/tool activity in the same home experience.
-- The current Textual app also includes initial mini/full run actions at the
-  app layer, reusing the same orchestrator and default run-request builders.
-- Those app-level run actions now use a thread-backed non-blocking wrapper so
-  home-state sections can reflect running, completed, and failed states.
-- When the Textual runtime is active, the app also registers a periodic refresh
-  loop so the `live_progress` section can update automatically from the active
-  workflow monitor.
-- The home screen now also exposes explicit run-state and compare-summary
-  sections so users can see whether the system is idle/running and how the most
-  recent agentic-vs-baseline comparison turned out.
+- Running `python agentic_vad.py` now launches a persistent REPL-style terminal
+  console instead of the older Textual-first home screen.
+- The REPL auto-runs a startup workspace overview and then accepts short
+  commands such as:
+
+```text
+help
+doctor
+status
+download models-core
+build mini
+run mini
+run full
+results
+compare
+exit
+```
+
+- The REPL currently handles:
+  - startup readiness overview
+  - `doctor`
+  - `status`
+  - `results`
+  - `compare`
+  - `run mini`
+  - `run full`
+  - recommendation-only `download ...` and `build mini` helper commands
+- Direct Typer subcommands remain available for automation, debugging, and
+  non-interactive server usage.
 
 ## 2. Asset Download
 

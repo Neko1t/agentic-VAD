@@ -8,6 +8,7 @@ import typer
 
 from src.app import orchestrator
 from src.app.models import RunRequest, WorkflowType
+from src.app.repl_shell import run_repl_session
 from src.app.tui_app import launch_home
 from src.core.schemas import RunMode
 
@@ -35,9 +36,7 @@ def main(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is not None:
         return
     repo_root = Path(__file__).resolve().parents[2]
-    rendered = launch_home(repo_root=repo_root, preferred_dataset="ucf_crime")
-    if rendered is not None:
-        typer.echo(rendered)
+    run_repl_session(repo_root=repo_root, preferred_dataset="ucf_crime", emit_output=typer.echo)
     raise typer.Exit()
 
 
