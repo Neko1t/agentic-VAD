@@ -14,4 +14,4 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   fi
 fi
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/scripts/build_ucf_crime_mini_subset.py" "$@"
+exec "${PYTHON_BIN}" "${SCRIPT_DIR}/build_ucf_crime_mini_subset.py" "$@"

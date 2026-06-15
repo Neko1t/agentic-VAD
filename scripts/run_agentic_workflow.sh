@@ -5,10 +5,10 @@ set -euo pipefail
 #
 # Usage:
 #   1) Edit the variables below, then run:
-#        bash run_agentic_workflow.sh
+#        bash scripts/run_agentic_workflow.sh
 #      or on Linux:
-#        chmod +x run_agentic_workflow.sh
-#        ./run_agentic_workflow.sh
+#        chmod +x scripts/run_agentic_workflow.sh
+#        ./scripts/run_agentic_workflow.sh
 #
 #   2) Or override by environment variables:
 #        ROOT_PATH=/data/ucf_crime/frames \
@@ -16,12 +16,13 @@ set -euo pipefail
 #        CAPTIONS_DIR=/data/ucf_crime/captions/video_llama3_json_results \
 #        TEMPORAL_ANNOTATION_FILE=/data/ucf_crime/annotations/temporal_test.txt \
 #        BASELINE_SCORES_DIR=/data/ucf_crime/refined_scores/videollama3 \
-#        bash run_agentic_workflow.sh
+#        bash scripts/run_agentic_workflow.sh
 #
 #   3) Or append extra Typer options:
-#        bash run_agentic_workflow.sh --stage pipeline --no-use-chroma
+#        bash scripts/run_agentic_workflow.sh --stage pipeline --no-use-chroma
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${SCRIPT_DIR}"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -45,8 +46,8 @@ TEMPORAL_ANNOTATION_FILE="${TEMPORAL_ANNOTATION_FILE:-/path/to/dataset/annotatio
 # ----------------------------
 # Optional paths
 # ----------------------------
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/data/agentic_outputs}"
-MEMORY_DIR="${MEMORY_DIR:-${SCRIPT_DIR}/data/agentic_memory}"
+OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/data/agentic_outputs}"
+MEMORY_DIR="${MEMORY_DIR:-${REPO_ROOT}/data/agentic_memory}"
 BASELINE_SCORES_DIR="${BASELINE_SCORES_DIR:-}"
 BASELINE_METRICS_DIR="${BASELINE_METRICS_DIR:-}"
 
@@ -159,7 +160,7 @@ if [[ -n "${STAGES}" ]]; then
 fi
 
 echo "[INFO] Python: ${PYTHON_BIN}"
-echo "[INFO] Repo: ${SCRIPT_DIR}"
+echo "[INFO] Repo: ${REPO_ROOT}"
 echo "[INFO] Output dir: ${OUTPUT_DIR}"
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/scripts/run_agentic_workflow.py" "${ARGS[@]}" "$@"
+exec "${PYTHON_BIN}" "${SCRIPT_DIR}/run_agentic_workflow.py" "${ARGS[@]}" "$@"

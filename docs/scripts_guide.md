@@ -21,9 +21,9 @@ Purpose:
 Typical usage:
 
 ```bash
-chmod +x download_agentic_assets.sh
-./download_agentic_assets.sh --list --preset bootstrap
-./download_agentic_assets.sh --preset models-core
+chmod +x scripts/download_agentic_assets.sh
+./scripts/download_agentic_assets.sh --list --preset bootstrap
+./scripts/download_agentic_assets.sh --preset models-core
 ```
 
 Main implementation:
@@ -69,14 +69,14 @@ Purpose:
 Typical usage:
 
 ```bash
-chmod +x build_ucf_crime_mini_subset.sh
-./build_ucf_crime_mini_subset.sh
+chmod +x scripts/build_ucf_crime_mini_subset.sh
+./scripts/build_ucf_crime_mini_subset.sh
 ```
 
 Custom video list:
 
 ```bash
-./build_ucf_crime_mini_subset.sh \
+./scripts/build_ucf_crime_mini_subset.sh \
   --video Abuse028_x264 \
   --video Abuse030_x264 \
   --video Arrest001_x264 \
@@ -103,20 +103,20 @@ Purpose:
 Typical usage:
 
 ```bash
-chmod +x run_agentic_workflow.sh
+chmod +x scripts/run_agentic_workflow.sh
 ROOT_PATH=/data/ucf_crime/frames \
 ANNOTATION_FILE_PATH=/data/ucf_crime/annotations/test.txt \
 CAPTIONS_DIR=/data/ucf_crime/captions/video_llama3_json_results \
 TEMPORAL_ANNOTATION_FILE=/data/ucf_crime/annotations/temporal_test.txt \
 BASELINE_SCORES_DIR=/data/ucf_crime/refined_scores/videollama3 \
-./run_agentic_workflow.sh
+./scripts/run_agentic_workflow.sh
 ```
 
 Useful flags:
 
 ```bash
-./run_agentic_workflow.sh --stage pipeline --no-use-chroma
-./run_agentic_workflow.sh --stage pipeline --stage metrics
+./scripts/run_agentic_workflow.sh --stage pipeline --no-use-chroma
+./scripts/run_agentic_workflow.sh --stage pipeline --stage metrics
 ```
 
 Main implementation:
@@ -133,9 +133,9 @@ Purpose:
 Typical usage:
 
 ```bash
-chmod +x run_agentic_workflow_ucf_crime.sh
-./run_agentic_workflow_ucf_crime.sh
-./run_agentic_workflow_ucf_crime.sh --stage pipeline --no-use-chroma
+chmod +x scripts/run_agentic_workflow_ucf_crime.sh
+./scripts/run_agentic_workflow_ucf_crime.sh
+./scripts/run_agentic_workflow_ucf_crime.sh --stage pipeline --no-use-chroma
 ```
 
 Defaults:
@@ -154,9 +154,9 @@ Purpose:
 Typical usage:
 
 ```bash
-chmod +x run_agentic_workflow_xd_violence.sh
-./run_agentic_workflow_xd_violence.sh
-./run_agentic_workflow_xd_violence.sh --stage pipeline --no-use-chroma
+chmod +x scripts/run_agentic_workflow_xd_violence.sh
+./scripts/run_agentic_workflow_xd_violence.sh
+./scripts/run_agentic_workflow_xd_violence.sh --stage pipeline --no-use-chroma
 ```
 
 Defaults:

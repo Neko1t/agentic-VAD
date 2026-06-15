@@ -18,13 +18,16 @@ Important directories:
 - `docs/`: longer implementation notes. One existing Chinese plan file appears
   to have encoding mojibake and should be fixed later.
 
-Current design docs in the project root:
+Current design docs live under `docs/`:
 
-- `agentic_vad_architecture.md`: high-level multi-agent architecture.
-- `agent_communication_schema_design.md`: proposed Pydantic communication
+- `docs/agentic_vad_architecture.md`: high-level multi-agent architecture.
+- `docs/agent_communication_schema_design.md`: proposed Pydantic communication
   schemas and memory event design.
-- `agentic_vad_schema_implementation_flow.md`: phased implementation plan for
-  schema, memory policy, agent process method, pipeline refactor, and tests.
+- `docs/agentic_vad_schema_implementation_flow.md`: phased implementation plan
+  for schema, memory policy, agent process method, pipeline refactor, and
+  tests.
+- `docs/agentic_vad_workflow.md`: runtime workflow and output artifacts.
+- `docs/scripts_guide.md`: script usage guide.
 
 This `agent.md` is the quick-start handoff document for future sessions.
 
@@ -72,6 +75,10 @@ Key packages:
   - `build_case_memory.py`: imports episode outputs into memory.
   - `extract_patterns_offline.py`: extracts pattern prototypes from finalized
     case memory.
+
+- `scripts/`
+  - Shell wrappers, dataset presets, download helpers, and small operational
+    entrypoints for Linux / server use.
 
 ## Current Prototype Behavior
 
@@ -409,8 +416,8 @@ LLM-based scorer, must follow these rules to reduce GPU memory risk:
   `libs/`.
 - Decide whether to add a real baseline `scores_dir` preset for automated
   comparison against the original author pipeline on each dataset.
-- When adding a new script or executable entrypoint, update `scripts_guide.md`
-  in the same change so the usage guide stays current.
+- When adding a new script or executable entrypoint, update
+  `docs/scripts_guide.md` in the same change so the usage guide stays current.
 
 After this, the project will have a clean agent communication layer suitable
 for real VLM backend integration, LLM-based story reasoning, session memory,

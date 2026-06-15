@@ -9,6 +9,13 @@
 
 This is the code implementation for the paper [A Unified Reasoning Framework for Holistic Zero-Shot Video Anomaly Analysis (NeurIPS 2025)](https://openreview.net/pdf?id=Qla5PqFL0s). We thank the previous work for their excellent [codebase](https://github.com/lucazanella/lavad).
 
+Quick repository entrypoints:
+
+- `PROJECT_OVERVIEW.md`: fast project summary for a new session
+- `agent.md`: session handoff and current engineering notes
+- `docs/scripts_guide.md`: script usage index
+- `docs/agentic_vad_workflow.md`: workflow/runtime design
+
 ## Agentic VAD Prototype
 
 This repository now also includes an agentic VAD prototype under `src/pipelines/run_agentic_vad.py`, with:

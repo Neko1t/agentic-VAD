@@ -1,19 +1,19 @@
 # Agentic VAD Linux Run Guide
 
 This document explains how to run the current agentic VAD workflow on a Linux
-machine using the executable shell scripts stored in the project root.
+machine using the executable shell scripts stored in `scripts/`.
 
 ## 1. Available Entry Scripts
 
-Root-level scripts:
+Script entrypoints:
 
-- `run_agentic_workflow.sh`
+- `scripts/run_agentic_workflow.sh`
   - Generic workflow launcher.
   - Use this when you want full control over dataset paths.
-- `run_agentic_workflow_ucf_crime.sh`
+- `scripts/run_agentic_workflow_ucf_crime.sh`
   - UCF-Crime path template.
   - Uses README-style default paths under `data/ucf_crime/`.
-- `run_agentic_workflow_xd_violence.sh`
+- `scripts/run_agentic_workflow_xd_violence.sh`
   - XD-Violence path template.
   - Uses README-style default paths under `data/xd_violence/`.
 
@@ -51,9 +51,9 @@ pip install -r requirements.txt
 Run once:
 
 ```bash
-chmod +x run_agentic_workflow.sh
-chmod +x run_agentic_workflow_ucf_crime.sh
-chmod +x run_agentic_workflow_xd_violence.sh
+chmod +x scripts/run_agentic_workflow.sh
+chmod +x scripts/run_agentic_workflow_ucf_crime.sh
+chmod +x scripts/run_agentic_workflow_xd_violence.sh
 ```
 
 ## 4. Expected Dataset Structure
@@ -96,13 +96,13 @@ Notes:
 ### UCF-Crime
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh
+./scripts/run_agentic_workflow_ucf_crime.sh
 ```
 
 ### XD-Violence
 
 ```bash
-./run_agentic_workflow_xd_violence.sh
+./scripts/run_agentic_workflow_xd_violence.sh
 ```
 
 These template scripts default to the full stage chain:
@@ -123,7 +123,7 @@ TEMPORAL_ANNOTATION_FILE=/data/ucf_crime/annotations/temporal_test.txt \
 OUTPUT_DIR=/data/agentic_outputs/ucf_crime \
 MEMORY_DIR=/data/agentic_memory/ucf_crime \
 BASELINE_SCORES_DIR=/data/ucf_crime/refined_scores/videollama3 \
-./run_agentic_workflow.sh
+./scripts/run_agentic_workflow.sh
 ```
 
 ## 7. Stage-Based Debugging
@@ -135,19 +135,19 @@ Examples:
 ### Pipeline only
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh --stage pipeline
+./scripts/run_agentic_workflow_ucf_crime.sh --stage pipeline
 ```
 
 ### Pipeline + metrics
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh --stage pipeline --stage metrics
+./scripts/run_agentic_workflow_ucf_crime.sh --stage pipeline --stage metrics
 ```
 
 ### Metrics + baseline comparison only
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh \
+./scripts/run_agentic_workflow_ucf_crime.sh \
   --stage metrics \
   --stage baseline-metrics \
   --stage compare
@@ -156,7 +156,7 @@ Examples:
 ### Disable Chroma for lightweight debugging
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh --stage pipeline --no-use-chroma
+./scripts/run_agentic_workflow_ucf_crime.sh --stage pipeline --no-use-chroma
 ```
 
 ## 8. Useful Environment Variables
@@ -247,7 +247,7 @@ Meaning:
 
 Cause:
 
-- You used `run_agentic_workflow.sh` without replacing the default placeholder
+- You used `scripts/run_agentic_workflow.sh` without replacing the default placeholder
   paths.
 
 Fix:
@@ -267,7 +267,7 @@ Fix:
 - Or override:
 
 ```bash
-PYTHON_BIN=python ./run_agentic_workflow_ucf_crime.sh
+PYTHON_BIN=python ./scripts/run_agentic_workflow_ucf_crime.sh
 ```
 
 ### Problem: `temporal_annotation_file is required`
@@ -301,7 +301,7 @@ Cause:
 Fix:
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh --no-use-chroma
+./scripts/run_agentic_workflow_ucf_crime.sh --no-use-chroma
 ```
 
 ## 11. Recommended First Run
@@ -309,7 +309,7 @@ Fix:
 For a first validation on Linux, use:
 
 ```bash
-./run_agentic_workflow_ucf_crime.sh --stage pipeline --stage metrics --no-use-chroma
+./scripts/run_agentic_workflow_ucf_crime.sh --stage pipeline --stage metrics --no-use-chroma
 ```
 
 Reason:

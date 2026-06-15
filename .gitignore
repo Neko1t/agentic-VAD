@@ -3,3 +3,13 @@
 .tmp/
 __pycache__/
 *.py[cod]
+temp.txt
+.asset_status/
+data/**/_downloads/
+data/MSAD/
+data/UBNormal/
+data/ucf_crime/
+data/ucf_crime_mini/
+data/xd_violence/
+data/agentic_outputs/
+data/agentic_memory/

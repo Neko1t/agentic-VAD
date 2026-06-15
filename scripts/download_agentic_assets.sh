@@ -14,4 +14,4 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   fi
 fi
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/scripts/download_agentic_assets.py" "$@"
+exec "${PYTHON_BIN}" "${SCRIPT_DIR}/download_agentic_assets.py" "$@"

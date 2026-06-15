@@ -4,27 +4,28 @@ set -euo pipefail
 # XD-Violence template launcher for the agentic VAD workflow.
 #
 # Linux:
-#   chmod +x run_agentic_workflow_xd_violence.sh
-#   ./run_agentic_workflow_xd_violence.sh
+#   chmod +x scripts/run_agentic_workflow_xd_violence.sh
+#   ./scripts/run_agentic_workflow_xd_violence.sh
 #
 # Override any variable inline if your paths differ:
 #   DATASET_DIR=/data/xd_violence \
 #   CAPTIONS_DIR=/data/xd_violence/captions/video_llama3_json_results \
 #   BASELINE_SCORES_DIR=/data/xd_violence/refined_scores/videollama3 \
-#   ./run_agentic_workflow_xd_violence.sh --stage pipeline --no-use-chroma
+#   ./scripts/run_agentic_workflow_xd_violence.sh --stage pipeline --no-use-chroma
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${SCRIPT_DIR}"
 
-export DATASET_DIR="${DATASET_DIR:-${SCRIPT_DIR}/data/xd_violence}"
+export DATASET_DIR="${DATASET_DIR:-${REPO_ROOT}/data/xd_violence}"
 
 export ROOT_PATH="${ROOT_PATH:-${DATASET_DIR}/frames}"
 export ANNOTATION_FILE_PATH="${ANNOTATION_FILE_PATH:-${DATASET_DIR}/annotations/test.txt}"
 export CAPTIONS_DIR="${CAPTIONS_DIR:-${DATASET_DIR}/captions/video_llama3_json_results}"
 export TEMPORAL_ANNOTATION_FILE="${TEMPORAL_ANNOTATION_FILE:-${DATASET_DIR}/annotations/temporal_test.txt}"
 
-export OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/data/agentic_outputs/xd_violence}"
-export MEMORY_DIR="${MEMORY_DIR:-${SCRIPT_DIR}/data/agentic_memory/xd_violence}"
+export OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/data/agentic_outputs/xd_violence}"
+export MEMORY_DIR="${MEMORY_DIR:-${REPO_ROOT}/data/agentic_memory/xd_violence}"
 
 # Original/baseline scores from the author pipeline for comparison.
 export BASELINE_SCORES_DIR="${BASELINE_SCORES_DIR:-${DATASET_DIR}/refined_scores/videollama3}"
