@@ -31,6 +31,7 @@ class Asset:
     gdrive_url: str | None = None
     manual_url: str | None = None
     gated: bool = False
+    markers: tuple[str, ...] = ()
 
 
 ASSETS: tuple[Asset, ...] = (
@@ -44,6 +45,7 @@ ASSETS: tuple[Asset, ...] = (
         note="Used by EmbeddingBuilder. The code can fall back to a deterministic local embedder, but real retrieval quality depends on this model.",
         modelscope_repo="BAAI/bge-base-en-v1.5",
         hf_repo="BAAI/bge-base-en-v1.5",
+        markers=("libs/embeddings/bge-base-en-v1.5",),
     ),
     Asset(
         asset_id="videollama3-7b",
@@ -55,6 +57,7 @@ ASSETS: tuple[Asset, ...] = (
         note="Planned replacement for the current caption-json VLM path. Large download.",
         modelscope_repo="DAMO-NLP-SG/VideoLLaMA3-7B",
         hf_repo="DAMO-NLP-SG/VideoLLaMA3-7B",
+        markers=("libs/videollama3/VideoLLaMA3-7B",),
     ),
     Asset(
         asset_id="llama-3.1-8b-instruct",
@@ -67,6 +70,7 @@ ASSETS: tuple[Asset, ...] = (
         modelscope_repo="LLM-Research/Meta-Llama-3.1-8B-Instruct",
         hf_repo="meta-llama/Llama-3.1-8B-Instruct",
         gated=True,
+        markers=("libs/llama/llama3.1-8b",),
     ),
     Asset(
         asset_id="preprocessed-annotation-bundle",
@@ -77,6 +81,12 @@ ASSETS: tuple[Asset, ...] = (
         mode="download",
         note="README-provided Google Drive package for project-compatible annotations and related preprocessing artifacts.",
         gdrive_url="https://drive.google.com/file/d/1jULt7PKZDTronu4eqiMwCqteKRjjVlmn/view?usp=sharing",
+        markers=(
+            "data/ucf_crime/annotations/test.txt",
+            "data/ucf_crime/annotations/Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
+            "data/xd_violence/annotations/test.txt",
+            "data/xd_violence/annotations/temporal_anomaly_annotation_for_testing_videos.txt",
+        ),
     ),
     Asset(
         asset_id="ucf-crime-videos",
@@ -87,6 +97,7 @@ ASSETS: tuple[Asset, ...] = (
         mode="manual",
         note="Needed if you want to reproduce frame extraction or generate new captions. The code expects extracted videos under this directory.",
         manual_url="https://visionlab.uncc.edu/download/summary/60-data/477-ucf-anomaly-detection-dataset",
+        markers=("data/ucf_crime/videos",),
     ),
     Asset(
         asset_id="xd-violence-videos",
@@ -97,6 +108,7 @@ ASSETS: tuple[Asset, ...] = (
         mode="manual",
         note="Needed if you want to run on XD-Violence from raw videos.",
         manual_url="https://roc-ng.github.io/XD-Violence/",
+        markers=("data/xd_violence/videos",),
     ),
     Asset(
         asset_id="ucf-crime-captions",
@@ -106,6 +118,7 @@ ASSETS: tuple[Asset, ...] = (
         required_now=True,
         mode="manual",
         note="Current agentic pipeline reads caption JSONs from this directory. There is no stable scriptable public link in the repo; generate them with src/video_pre_caption.py or place provided files here.",
+        markers=("data/ucf_crime/captions/video_llama3_json_results",),
     ),
     Asset(
         asset_id="xd-violence-captions",
@@ -115,6 +128,7 @@ ASSETS: tuple[Asset, ...] = (
         required_now=True,
         mode="manual",
         note="Current agentic pipeline reads caption JSONs from this directory. Generate them with src/video_pre_caption.py or place provided files here.",
+        markers=("data/xd_violence/captions/video_llama3_json_results",),
     ),
     Asset(
         asset_id="ucf-crime-baseline-scores",
@@ -124,6 +138,7 @@ ASSETS: tuple[Asset, ...] = (
         required_now=False,
         mode="manual",
         note="Used by the workflow comparison stage. The repo README says these files are provided, but it does not expose a stable direct machine-download link.",
+        markers=("data/ucf_crime/refined_scores/videollama3",),
     ),
     Asset(
         asset_id="xd-violence-baseline-scores",
@@ -133,6 +148,7 @@ ASSETS: tuple[Asset, ...] = (
         required_now=False,
         mode="manual",
         note="Used by the workflow comparison stage. Place the original pipeline scores here if available.",
+        markers=("data/xd_violence/refined_scores/videollama3",),
     ),
 )
 
@@ -166,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source", choices=("auto", "modelscope", "hf-mirror"), default="auto")
     parser.add_argument("--list", action="store_true", help="Only print the asset plan.")
     parser.add_argument("--skip-manual", action="store_true", help="Skip manual-only assets in the execution output.")
+    parser.add_argument("--force", action="store_true", help="Download even if the target markers already exist.")
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"))
     parser.add_argument("--modelscope-token", default=os.environ.get("MODELSCOPE_API_TOKEN"))
     return parser
@@ -206,6 +223,24 @@ def render_asset_table(assets: Iterable[Asset], root: Path) -> None:
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _path_has_content(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.stat().st_size > 0
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return False
+    return True
+
+
+def asset_ready(asset: Asset, root: Path) -> bool:
+    if asset.markers:
+        return all(_path_has_content(root / marker) for marker in asset.markers)
+    return _path_has_content(root / asset.target)
 
 
 def download_modelscope(asset: Asset, dest: Path, token: str | None) -> None:
@@ -270,6 +305,9 @@ def try_extract_archive(archive_path: Path, dest_dir: Path) -> bool:
 def perform_download(asset: Asset, args: argparse.Namespace) -> str:
     root = args.root.resolve()
     target = root / asset.target
+
+    if not args.force and asset_ready(asset, root):
+        return f"Skipped: required files already exist under {target}"
 
     if asset.mode == "manual":
         ensure_dir(target)
