@@ -3,8 +3,44 @@
 .tmp/
 __pycache__/
 *.py[cod]
+*.log
+*.out
+*.err
+.DS_Store
+
+# Local envs and IDE state
+.venv/
+venv/
+env/
+.env
+.env.*
+.python-version
+.vscode/
+.idea/
+
+# Local temp files
+*.tmp
+*.bak
+*.swp
+*.swo
 temp.txt
 .asset_status/
+
+# Downloaded archives / large transfer artifacts
+*.7z
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# Model caches
+.cache/
+huggingface/
+hf_home/
+modelscope/
+
+# Project data and generated artifacts
 data/**/_downloads/
 data/MSAD/
 data/UBNormal/
@@ -13,3 +49,8 @@ data/ucf_crime_mini/
 data/xd_violence/
 data/agentic_outputs/
 data/agentic_memory/
+
+# Local model weights
+libs/embeddings/
+libs/videollama3/
+libs/llama/
