@@ -24,6 +24,7 @@ _VALID_TOP_LEVEL = {
     "run",
     "results",
     "compare",
+    "set",
     "clear",
     "exit",
     "quit",

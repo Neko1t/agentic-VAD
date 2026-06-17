@@ -8,6 +8,7 @@ set -euo pipefail
 #   ./scripts/run_agentic_workflow_ucf_crime.sh
 #
 # Override any variable inline if your paths differ:
+#   GPU_DEVICE=0 \
 #   DATASET_DIR=/data/ucf_crime \
 #   CAPTIONS_DIR=/data/ucf_crime/captions/video_llama3_json_results \
 #   BASELINE_SCORES_DIR=/data/ucf_crime/refined_scores/videollama3 \

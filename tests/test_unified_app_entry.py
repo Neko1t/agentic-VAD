@@ -108,6 +108,8 @@ def test_run_mini_command_routes_to_workflow(tmp_path: Path):
             "--memory-dir",
             str(tmp_path / "memory"),
             "--no-use-chroma",
+            "--gpu-device",
+            "0",
         ],
     )
 
@@ -115,3 +117,76 @@ def test_run_mini_command_routes_to_workflow(tmp_path: Path):
     payload = json.loads(result.stdout)
     assert payload["selected_stages"]
     assert payload["workflow_type"] == "mini"
+
+
+def test_run_mini_command_requires_gpu_device(tmp_path: Path):
+    from src.app.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "mini",
+            "--root-path",
+            str(tmp_path / "frames"),
+            "--annotation-file-path",
+            str(tmp_path / "annotations" / "test.txt"),
+            "--captions-dir",
+            str(tmp_path / "captions"),
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--memory-dir",
+            str(tmp_path / "memory"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--gpu-device" in result.stdout
+
+
+def test_run_mini_command_accepts_vlm_options(monkeypatch, tmp_path: Path):
+    from src.app.cli import app
+
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def _fake_run(request, *, capture_progress=False, monitor=None):
+        captured["use_vlm"] = request.use_vlm
+        captured["video_root_path"] = request.video_root_path
+        captured["vlm_model_path"] = request.vlm_model_path
+        captured["gpu_device"] = request.gpu_device
+        return {"selected_stages": ["pipeline"], "workflow_type": "mini"}
+
+    monkeypatch.setattr("src.app.cli.orchestrator.run", _fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "mini",
+            "--root-path",
+            str(tmp_path / "frames"),
+            "--annotation-file-path",
+            str(tmp_path / "annotations" / "test.txt"),
+            "--captions-dir",
+            str(tmp_path / "captions"),
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--memory-dir",
+            str(tmp_path / "memory"),
+            "--gpu-device",
+            "1",
+            "--use-vlm",
+            "--video-root-path",
+            str(tmp_path / "videos"),
+            "--vlm-model-path",
+            str(tmp_path / "models" / "VideoLLaMA3-7B"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["use_vlm"] is True
+    assert captured["gpu_device"] == "1"
+    assert str(captured["video_root_path"]).endswith("videos")
+    assert str(captured["vlm_model_path"]).endswith("VideoLLaMA3-7B")

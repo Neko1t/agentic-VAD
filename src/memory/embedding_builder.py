@@ -9,9 +9,15 @@ from typing import List, Sequence
 class EmbeddingBuilder:
     """Embedding wrapper with a deterministic local fallback."""
 
-    def __init__(self, model_name: str = "BAAI/bge-base-en-v1.5", vector_dim: int = 64):
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-base-en-v1.5",
+        vector_dim: int = 64,
+        device: str | None = None,
+    ):
         self.model_name = model_name
         self.vector_dim = vector_dim
+        self.device = device
         self._model = None
         self._load_error = None
 
@@ -21,7 +27,8 @@ class EmbeddingBuilder:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self.model_name)
+            kwargs = {"device": self.device} if self.device else {}
+            self._model = SentenceTransformer(self.model_name, **kwargs)
         except Exception as exc:  # pragma: no cover - optional dependency path
             self._load_error = exc
             self._model = None

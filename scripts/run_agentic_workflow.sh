@@ -54,6 +54,7 @@ BASELINE_METRICS_DIR="${BASELINE_METRICS_DIR:-}"
 # ----------------------------
 # Runtime options
 # ----------------------------
+GPU_DEVICE="${GPU_DEVICE:-}"
 FRAME_INTERVAL="${FRAME_INTERVAL:-16}"
 ROLLING_WINDOW_SIZE="${ROLLING_WINDOW_SIZE:-4}"
 TOP_K="${TOP_K:-5}"
@@ -93,12 +94,22 @@ EOF
   exit 1
 fi
 
+if [[ -z "${GPU_DEVICE}" ]]; then
+  cat >&2 <<'EOF'
+[ERROR] GPU_DEVICE is required.
+Set it explicitly before running, for example:
+  GPU_DEVICE=0 bash scripts/run_agentic_workflow.sh
+EOF
+  exit 1
+fi
+
 ARGS=(
   --root-path "${ROOT_PATH}"
   --annotation-file-path "${ANNOTATION_FILE_PATH}"
   --captions-dir "${CAPTIONS_DIR}"
   --output-dir "${OUTPUT_DIR}"
   --memory-dir "${MEMORY_DIR}"
+  --gpu-device "${GPU_DEVICE}"
   --temporal-annotation-file "${TEMPORAL_ANNOTATION_FILE}"
   --frame-interval "${FRAME_INTERVAL}"
   --rolling-window-size "${ROLLING_WINDOW_SIZE}"

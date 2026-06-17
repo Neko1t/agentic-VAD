@@ -20,6 +20,7 @@ def _prepare_app_root(tmp_path: Path) -> Path:
 def test_run_default_workflow_passes_active_monitor_to_orchestrator(monkeypatch, tmp_path: Path):
     from src.app.tui_app import AgenticVADApp
 
+    monkeypatch.setenv("GPU_DEVICE", "0")
     repo_root = _prepare_app_root(tmp_path)
     app = AgenticVADApp(repo_root=repo_root, preferred_dataset="ucf_crime")
     captured = {}
@@ -40,3 +41,4 @@ def test_run_default_workflow_passes_active_monitor_to_orchestrator(monkeypatch,
 
     assert captured["capture_progress"] is True
     assert captured["monitor"] is not None
+    assert captured["monitor"] is app.active_monitor

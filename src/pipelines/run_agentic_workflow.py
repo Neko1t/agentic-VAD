@@ -14,6 +14,7 @@ from src.eval.agentic_vad_metrics import load_metric_report, run_metrics
 from src.pipelines.extract_patterns_offline import extract_patterns
 from src.pipelines.promote_case_memory import promote_cases
 from src.pipelines.run_agentic_vad import run_pipeline
+from src.runtime.device import activate_gpu_device
 from src.runtime.progress import PrefixedProgressReporter, ProgressEvent, RichProgressReporter
 
 app = typer.Typer(add_completion=False, help="Run the end-to-end agentic VAD workflow with progress and metric comparison.")
@@ -132,6 +133,7 @@ def run_workflow(
     captions_dir: Path,
     output_dir: Path = Path("./data/agentic_outputs"),
     memory_dir: Path = Path("./data/agentic_memory"),
+    gpu_device: str,
     temporal_annotation_file: Optional[Path] = None,
     baseline_scores_dir: Optional[Path] = None,
     baseline_metrics_dir: Optional[Path] = None,
@@ -152,8 +154,14 @@ def run_workflow(
     pattern_min_support: int = 2,
     normal_label: int = 0,
     video_fps: float = 30.0,
+    use_vlm: bool = False,
+    video_root_path: Optional[Path] = None,
+    vlm_model_path: Optional[Path] = None,
+    workflow_type: str | None = None,
+    request_payload: dict[str, Any] | None = None,
     progress_reporter=None,
 ) -> dict[str, Any]:
+    device_binding = activate_gpu_device(gpu_device)
     selected_stages = resolve_stages(
         stages,
         baseline_scores_dir=baseline_scores_dir,
@@ -167,7 +175,29 @@ def run_workflow(
         "selected_stages": [stage.value for stage in selected_stages],
         "output_dir": str(output_dir),
         "memory_dir": str(memory_dir),
+        "config": {
+            "frame_interval": frame_interval,
+            "rolling_window_size": rolling_window_size,
+            "use_audio": use_audio,
+            "use_ocr": use_ocr,
+            "top_k": top_k,
+            "run_mode": run_mode.value,
+            "use_chroma": use_chroma,
+            "export_eval_scores": export_eval_scores,
+            "normal_label": normal_label,
+            "video_fps": video_fps,
+            "gpu_device": device_binding.requested_gpu,
+            "runtime_device": device_binding.runtime_device,
+            "use_vlm": use_vlm,
+            "vlm_mode": "videollama3" if use_vlm else "caption",
+            "video_root_path": str(video_root_path) if video_root_path else None,
+            "vlm_model_path": str(vlm_model_path) if vlm_model_path else None,
+        },
     }
+    if workflow_type is not None:
+        summary["workflow_type"] = workflow_type
+    if request_payload is not None:
+        summary["request"] = request_payload
 
     manager = reporter if hasattr(reporter, "__enter__") else nullcontext(reporter)
     with manager:
@@ -183,6 +213,7 @@ def run_workflow(
                     captions_dir=captions_dir,
                     output_dir=output_dir,
                     memory_dir=memory_dir,
+                    gpu_device=device_binding.requested_gpu,
                     frame_interval=frame_interval,
                     rolling_window_size=rolling_window_size,
                     use_audio=use_audio,
@@ -191,6 +222,9 @@ def run_workflow(
                     run_mode=run_mode,
                     use_chroma=use_chroma,
                     export_eval_scores=export_eval_scores,
+                    use_vlm=use_vlm,
+                    video_root_path=video_root_path,
+                    vlm_model_path=vlm_model_path,
                     progress_reporter=prefixed,
                 )
                 summary["pipeline"] = pipeline_summary
@@ -276,6 +310,7 @@ def main(
     captions_dir: Path = typer.Option(..., exists=True, file_okay=False),
     output_dir: Path = typer.Option(Path("./data/agentic_outputs")),
     memory_dir: Path = typer.Option(Path("./data/agentic_memory")),
+    gpu_device: str = typer.Option(..., help="Physical GPU index to reserve, for example 0 or 1."),
     temporal_annotation_file: Optional[Path] = typer.Option(None, exists=True, dir_okay=False),
     baseline_scores_dir: Optional[Path] = typer.Option(None, exists=True, file_okay=False),
     baseline_metrics_dir: Optional[Path] = typer.Option(None, exists=True, file_okay=False),
@@ -296,6 +331,9 @@ def main(
     pattern_min_support: int = typer.Option(2, min=1),
     normal_label: int = typer.Option(0),
     video_fps: float = typer.Option(30.0),
+    use_vlm: bool = typer.Option(False, "--use-vlm/--no-use-vlm"),
+    video_root_path: Optional[Path] = typer.Option(None),
+    vlm_model_path: Optional[Path] = typer.Option(None),
 ) -> None:
     summary = run_workflow(
         root_path=root_path,
@@ -303,6 +341,7 @@ def main(
         captions_dir=captions_dir,
         output_dir=output_dir,
         memory_dir=memory_dir,
+        gpu_device=gpu_device,
         temporal_annotation_file=temporal_annotation_file,
         baseline_scores_dir=baseline_scores_dir,
         baseline_metrics_dir=baseline_metrics_dir,
@@ -323,6 +362,9 @@ def main(
         pattern_min_support=pattern_min_support,
         normal_label=normal_label,
         video_fps=video_fps,
+        use_vlm=use_vlm,
+        video_root_path=video_root_path,
+        vlm_model_path=vlm_model_path,
     )
     typer.echo(json.dumps(_json_safe(summary), indent=2))
 

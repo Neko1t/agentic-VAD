@@ -40,6 +40,11 @@ class PipelineConfig(BaseModel):
     audio_backend: Optional[str] = Field(default=None)
     ocr_backend: Optional[str] = Field(default=None)
     run_mode: RunMode = Field(default=RunMode.ONLINE_INFERENCE)
+    gpu_device: str
+    runtime_device: str = Field(default="cuda:0")
+    use_vlm: bool = Field(default=False)
+    video_root_path: Optional[Path] = Field(default=None)
+    vlm_model_path: Optional[Path] = Field(default=None)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
 

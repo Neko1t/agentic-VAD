@@ -19,6 +19,24 @@ def test_parse_run_stage_command():
     assert command.args == ["stage", "pipeline"]
 
 
+def test_parse_set_vlm_command():
+    from src.app.repl_parser import parse_command
+
+    command = parse_command("set vlm on")
+
+    assert command.name == "set"
+    assert command.args == ["vlm", "on"]
+
+
+def test_parse_set_gpu_command():
+    from src.app.repl_parser import parse_command
+
+    command = parse_command("set gpu 1")
+
+    assert command.name == "set"
+    assert command.args == ["gpu", "1"]
+
+
 def test_parse_quit_alias_maps_to_exit():
     from src.app.repl_parser import parse_command
 

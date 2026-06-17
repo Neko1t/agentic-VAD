@@ -6,6 +6,7 @@ from pathlib import Path
 def test_run_default_workflow_applies_orchestrator_summary(monkeypatch, tmp_path: Path):
     from src.app.tui_app import AgenticVADApp
 
+    monkeypatch.setenv("GPU_DEVICE", "0")
     data_root = tmp_path / "data" / "ucf_crime"
     (data_root / "frames").mkdir(parents=True)
     (data_root / "annotations").mkdir(parents=True)
@@ -22,6 +23,7 @@ def test_run_default_workflow_applies_orchestrator_summary(monkeypatch, tmp_path
         captured["workflow_type"] = request.workflow_type.value
         captured["capture_progress"] = capture_progress
         captured["monitor"] = monitor
+        captured["gpu_device"] = request.gpu_device
         return {
             "workflow_type": request.workflow_type.value,
             "progress": {"latest": {"stage": "compare", "message": "status=ok", "tool_name": None}, "stages": {}},
@@ -37,5 +39,6 @@ def test_run_default_workflow_applies_orchestrator_summary(monkeypatch, tmp_path
     assert captured["workflow_type"] == "mini"
     assert captured["capture_progress"] is True
     assert captured["monitor"] is not None
+    assert captured["gpu_device"] == "0"
     assert summary["compare"]["status"] == "ok"
     assert "status=ok" in app.sections["live_progress"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from src.app.dashboard import build_compare_summary_rows, build_recent_result_ro
 from src.app.run_monitor import WorkflowMonitor
 from src.app.status import build_status_snapshot, build_workspace_snapshot
 from src.core.schemas import RunMode
+from src.runtime.device import normalize_gpu_device
 
 TEXTUAL_AVAILABLE = False
 try:
@@ -28,6 +30,13 @@ except Exception:  # pragma: no cover - optional dependency
     Header = object  # type: ignore[assignment]
     Footer = object  # type: ignore[assignment]
     Static = object  # type: ignore[assignment]
+
+
+def _resolve_textual_gpu_device() -> str:
+    raw_value = os.environ.get("GPU_DEVICE")
+    if raw_value is None:
+        raise ValueError("GPU_DEVICE environment variable is required for Textual experiment runs")
+    return normalize_gpu_device(raw_value)
 
 
 def build_home_sections(*, snapshot, workspace: dict[str, Any]) -> dict[str, str]:
@@ -92,6 +101,7 @@ def build_home_sections(*, snapshot, workspace: dict[str, Any]) -> dict[str, str
 def build_default_run_request(*, repo_root: Path, preferred_dataset: str, workflow_kind: str = "mini") -> RunRequest:
     dataset_name = f"{preferred_dataset}_mini" if workflow_kind == "mini" else preferred_dataset
     workflow_type = WorkflowType.MINI if workflow_kind == "mini" else WorkflowType.FULL
+    gpu_device = _resolve_textual_gpu_device()
     return RunRequest(
         workflow_type=workflow_type,
         root_path=repo_root / "data" / dataset_name / "frames",
@@ -106,6 +116,7 @@ def build_default_run_request(*, repo_root: Path, preferred_dataset: str, workfl
         / "Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
         baseline_scores_dir=repo_root / "data" / dataset_name / "refined_scores" / "videollama3",
         run_mode=RunMode.ONLINE_INFERENCE,
+        gpu_device=gpu_device,
     )
 
 

@@ -56,6 +56,9 @@ def build_default_run_request(
         / "Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
         baseline_scores_dir=repo_root / "data" / dataset_name / "refined_scores" / "videollama3",
         run_mode=RunMode.ONLINE_INFERENCE,
+        use_vlm=False,
+        video_root_path=repo_root / "data" / dataset_name / "videos",
+        vlm_model_path=repo_root / "libs" / "videollama3" / "VideoLLaMA3-7B",
     )
 
 
@@ -65,6 +68,8 @@ def run(
     capture_progress: bool = False,
     monitor: WorkflowMonitor | None = None,
 ) -> dict[str, Any]:
+    if not request.gpu_device:
+        raise ValueError("gpu_device is required for experiment runs")
     selected_stages = resolve_workflow_stages(request)
     progress_reporter = NullProgressReporter()
     active_monitor = monitor
@@ -78,6 +83,7 @@ def run(
         captions_dir=request.captions_dir,
         output_dir=request.output_dir,
         memory_dir=request.memory_dir,
+        gpu_device=request.gpu_device,
         temporal_annotation_file=request.temporal_annotation_file,
         baseline_scores_dir=request.baseline_scores_dir,
         baseline_metrics_dir=request.baseline_metrics_dir,
@@ -92,6 +98,11 @@ def run(
         export_eval_scores=request.export_eval_scores,
         normal_label=request.normal_label,
         video_fps=request.video_fps,
+        use_vlm=request.use_vlm,
+        video_root_path=request.video_root_path,
+        vlm_model_path=request.vlm_model_path,
+        workflow_type=request.workflow_type.value,
+        request_payload=json.loads(request.model_dump_json()),
         progress_reporter=progress_reporter,
     )
     summary["workflow_type"] = request.workflow_type.value

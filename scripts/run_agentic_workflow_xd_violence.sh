@@ -8,6 +8,7 @@ set -euo pipefail
 #   ./scripts/run_agentic_workflow_xd_violence.sh
 #
 # Override any variable inline if your paths differ:
+#   GPU_DEVICE=0 \
 #   DATASET_DIR=/data/xd_violence \
 #   CAPTIONS_DIR=/data/xd_violence/captions/video_llama3_json_results \
 #   BASELINE_SCORES_DIR=/data/xd_violence/refined_scores/videollama3 \

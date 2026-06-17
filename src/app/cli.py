@@ -82,6 +82,10 @@ def _build_run_request(
     export_eval_scores: bool,
     normal_label: int,
     video_fps: float,
+    gpu_device: str,
+    use_vlm: bool,
+    video_root_path: Optional[Path],
+    vlm_model_path: Optional[Path],
 ) -> RunRequest:
     return RunRequest(
         workflow_type=workflow_type,
@@ -104,6 +108,10 @@ def _build_run_request(
         export_eval_scores=export_eval_scores,
         normal_label=normal_label,
         video_fps=video_fps,
+        gpu_device=gpu_device,
+        use_vlm=use_vlm,
+        video_root_path=video_root_path,
+        vlm_model_path=vlm_model_path,
     )
 
 
@@ -127,6 +135,10 @@ def run_mini(
     export_eval_scores: bool = typer.Option(True),
     normal_label: int = typer.Option(0),
     video_fps: float = typer.Option(30.0),
+    gpu_device: str = typer.Option(..., help="Physical GPU index to reserve, for example 0 or 1."),
+    use_vlm: bool = typer.Option(False, "--use-vlm/--no-use-vlm"),
+    video_root_path: Optional[Path] = typer.Option(None),
+    vlm_model_path: Optional[Path] = typer.Option(None),
 ) -> None:
     request = _build_run_request(
         WorkflowType.MINI,
@@ -149,6 +161,10 @@ def run_mini(
         export_eval_scores=export_eval_scores,
         normal_label=normal_label,
         video_fps=video_fps,
+        gpu_device=gpu_device,
+        use_vlm=use_vlm,
+        video_root_path=video_root_path,
+        vlm_model_path=vlm_model_path,
     )
     _dump_json(orchestrator.run(request))
 
@@ -173,6 +189,10 @@ def run_full(
     export_eval_scores: bool = typer.Option(True),
     normal_label: int = typer.Option(0),
     video_fps: float = typer.Option(30.0),
+    gpu_device: str = typer.Option(..., help="Physical GPU index to reserve, for example 0 or 1."),
+    use_vlm: bool = typer.Option(False, "--use-vlm/--no-use-vlm"),
+    video_root_path: Optional[Path] = typer.Option(None),
+    vlm_model_path: Optional[Path] = typer.Option(None),
 ) -> None:
     request = _build_run_request(
         WorkflowType.FULL,
@@ -195,6 +215,10 @@ def run_full(
         export_eval_scores=export_eval_scores,
         normal_label=normal_label,
         video_fps=video_fps,
+        gpu_device=gpu_device,
+        use_vlm=use_vlm,
+        video_root_path=video_root_path,
+        vlm_model_path=vlm_model_path,
     )
     _dump_json(orchestrator.run(request))
 
@@ -220,6 +244,10 @@ def run_stage(
     export_eval_scores: bool = typer.Option(True),
     normal_label: int = typer.Option(0),
     video_fps: float = typer.Option(30.0),
+    gpu_device: str = typer.Option(..., help="Physical GPU index to reserve, for example 0 or 1."),
+    use_vlm: bool = typer.Option(False, "--use-vlm/--no-use-vlm"),
+    video_root_path: Optional[Path] = typer.Option(None),
+    vlm_model_path: Optional[Path] = typer.Option(None),
 ) -> None:
     request = _build_run_request(
         WorkflowType.STAGE,
@@ -242,6 +270,10 @@ def run_stage(
         export_eval_scores=export_eval_scores,
         normal_label=normal_label,
         video_fps=video_fps,
+        gpu_device=gpu_device,
+        use_vlm=use_vlm,
+        video_root_path=video_root_path,
+        vlm_model_path=vlm_model_path,
     )
     _dump_json(orchestrator.run(request))
 

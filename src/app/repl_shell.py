@@ -17,6 +17,7 @@ from src.app.repl_renderer import (
 from src.app.run_monitor import WorkflowMonitor
 from src.app.results import load_results
 from src.app.status import build_repl_overview
+from src.runtime.device import normalize_gpu_device
 
 
 def render_help_text() -> str:
@@ -26,6 +27,9 @@ def render_help_text() -> str:
             "- help",
             "- doctor",
             "- status",
+            "- set gpu <id>",
+            "- set vlm on",
+            "- set vlm off",
             "- download models-core",
             "- download bootstrap",
             "- build mini",
@@ -40,10 +44,12 @@ def render_help_text() -> str:
     )
 
 
-def build_prompt_text(overview: dict[str, object]) -> str:
+def build_prompt_text(overview: dict[str, object], *, use_vlm: bool, gpu_device: str | None) -> str:
     mini_state = "ready" if overview.get("mini_ready") else "missing"
     full_state = "ready" if overview.get("full_ready") else "missing"
-    return f"agentic-vad [mini:{mini_state} full:{full_state}] > "
+    vlm_state = "on" if use_vlm else "off"
+    gpu_state = gpu_device if gpu_device is not None else "unset"
+    return f"agentic-vad [mini:{mini_state} full:{full_state} vlm:{vlm_state} gpu:{gpu_state}] > "
 
 
 def run_repl_session(
@@ -53,11 +59,13 @@ def run_repl_session(
     emit_output: Callable[[str], None] = print,
 ) -> int:
     overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
+    use_vlm = False
+    gpu_device: str | None = None
     emit_output(render_repl_overview(overview))
 
     while True:
         try:
-            raw = input(build_prompt_text(overview))
+            raw = input(build_prompt_text(overview, use_vlm=use_vlm, gpu_device=gpu_device))
         except EOFError:
             return 0
 
@@ -76,6 +84,7 @@ def run_repl_session(
                 preferred_dataset=preferred_dataset,
                 workflow_type=WorkflowType.MINI,
             )
+            request = request.model_copy(update={"use_vlm": use_vlm})
             snapshot = orchestrator.doctor(
                 root_path=request.root_path,
                 annotation_file_path=request.annotation_file_path,
@@ -101,6 +110,24 @@ def run_repl_session(
             emit_output(render_compare_summary(summary))
             overview = build_repl_overview(repo_root=repo_root, preferred_dataset=preferred_dataset)
             continue
+        if command.name == "set":
+            if len(command.args) == 2 and command.args[0].lower() == "vlm":
+                state = command.args[1].lower()
+                if state in {"on", "off"}:
+                    use_vlm = state == "on"
+                    emit_output(f"vlm mode is now {state}")
+                else:
+                    emit_output("usage: set vlm on|off")
+            elif len(command.args) == 2 and command.args[0].lower() == "gpu":
+                try:
+                    gpu_device = normalize_gpu_device(command.args[1])
+                except ValueError as exc:
+                    emit_output(str(exc))
+                else:
+                    emit_output(f"gpu device is now {gpu_device}")
+            else:
+                emit_output("usage: set vlm on|off | set gpu <id>")
+            continue
         if command.name == "download":
             preset = command.args[0] if command.args else "models-core"
             emit_output(
@@ -119,11 +146,15 @@ def run_repl_session(
             if not overview.get("mini_ready"):
                 emit_output("mini dataset is not ready")
                 continue
+            if gpu_device is None:
+                emit_output("gpu device is not set. usage: set gpu <id>")
+                continue
             request = orchestrator.build_default_run_request(
                 repo_root=repo_root,
                 preferred_dataset=preferred_dataset,
                 workflow_type=WorkflowType.MINI,
             )
+            request = request.model_copy(update={"use_vlm": use_vlm, "gpu_device": gpu_device})
             monitor = WorkflowMonitor()
             summary = orchestrator.run(request, capture_progress=True, monitor=monitor)
             emit_output(render_progress_snapshot(monitor.snapshot()))
@@ -135,11 +166,15 @@ def run_repl_session(
             if not overview.get("full_ready"):
                 emit_output("full dataset is not ready")
                 continue
+            if gpu_device is None:
+                emit_output("gpu device is not set. usage: set gpu <id>")
+                continue
             request = orchestrator.build_default_run_request(
                 repo_root=repo_root,
                 preferred_dataset=preferred_dataset,
                 workflow_type=WorkflowType.FULL,
             )
+            request = request.model_copy(update={"use_vlm": use_vlm, "gpu_device": gpu_device})
             monitor = WorkflowMonitor()
             summary = orchestrator.run(request, capture_progress=True, monitor=monitor)
             emit_output(render_progress_snapshot(monitor.snapshot()))

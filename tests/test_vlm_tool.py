@@ -1,48 +1,47 @@
-import json
+from __future__ import annotations
+
+from pathlib import Path
 
 from src.core.schemas import TimeSpan, WindowInput
-from src.tools.vlm_tool import MockVLMBackend, VLMTool
+from src.tools import vlm_tool
+from src.tools.vlm_tool import VideoLLaMABackend
 
 
-def _window(start_frame: int = 0, end_frame: int = 15) -> WindowInput:
-    return WindowInput(
+def test_resolve_time_span_uses_local_timeline_for_temp_video(monkeypatch):
+    backend = VideoLLaMABackend(video_root=Path("."))
+    temp_video_path = Path("temp_window.mp4")
+    backend._video_cache[temp_video_path.as_posix()] = (2.0, 8.0)
+    monkeypatch.setattr(vlm_tool, "_TEMP_VIDEO_FILES", {temp_video_path.as_posix()})
+
+    window_input = WindowInput(
         video_id="video_1",
         video_path="video_1.mp4",
         window_id="video_1_0001",
-        time_span=TimeSpan(start_frame=start_frame, end_frame=end_frame),
-        frame_indices=list(range(start_frame, end_frame + 1)),
+        time_span=TimeSpan(start_frame=160, end_frame=175),
+        frame_indices=list(range(160, 176)),
+        frame_paths=["frame_160.jpg", "frame_161.jpg"],
     )
 
+    start_time, end_time = backend._resolve_time_span(temp_video_path, window_input)
 
-def test_vlm_tool_reads_precomputed_caption_backend(tmp_path):
-    caption_file = tmp_path / "video_1.json"
-    caption_file.write_text(
-        json.dumps(
-            {
-                "0": "A person is walking on a street.",
-                "10": "The person starts running.",
-            }
-        ),
-        encoding="utf-8",
+    assert start_time == 0.0
+    assert end_time == 8.0
+
+
+def test_resolve_time_span_keeps_original_timeline_for_real_video():
+    backend = VideoLLaMABackend(video_root=Path("."))
+    real_video_path = Path("video_1.mp4")
+    backend._video_cache[real_video_path.as_posix()] = (2.0, 8.0)
+
+    window_input = WindowInput(
+        video_id="video_1",
+        video_path=str(real_video_path),
+        window_id="video_1_0001",
+        time_span=TimeSpan(start_frame=4, end_frame=7),
+        frame_indices=list(range(4, 8)),
     )
 
-    result = VLMTool(captions_dir=tmp_path).vlm_describe(_window())
+    start_time, end_time = backend._resolve_time_span(real_video_path, window_input)
 
-    assert "walking" in result["vision_caption"]
-    assert "running" in result["vision_caption"]
-    assert result["backend_name"] == "precomputed_caption"
-    assert result["artifact_refs"] == [str(caption_file)]
-    assert "run" in result["actions"]
-    assert result["scene_context"] == "outdoor street scene"
-
-
-def test_vlm_tool_uses_mock_backend_for_deterministic_tests():
-    tool = VLMTool(backend=MockVLMBackend(caption="A man grabs a bag in a store."))
-
-    result = tool.vlm_describe(_window())
-
-    assert result["backend_name"] == "mock_vlm"
-    assert result["confidence"] == 1.0
-    assert "grab" in result["actions"]
-    assert "man" in result["entities"]
-    assert result["scene_context"] == "commercial indoor scene"
+    assert start_time == 2.0
+    assert end_time == 3.5

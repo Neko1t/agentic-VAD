@@ -3,6 +3,10 @@
 This document lists the executable scripts in the repository and how to use
 them quickly.
 
+For copy-ready server run templates covering `REPL`, `CLI`, legacy `TUI`,
+`GPU_DEVICE`, and `--use-vlm/--no-use-vlm`, also see
+`docs/server_experiment_entrypoints.md`.
+
 ## Conventions
 
 - Run scripts from the repository root unless noted otherwise.

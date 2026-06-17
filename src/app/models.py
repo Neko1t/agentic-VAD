@@ -56,6 +56,10 @@ class RunRequest(BaseModel):
     export_eval_scores: bool = True
     normal_label: int = 0
     video_fps: float = 30.0
+    gpu_device: str | None = None
+    use_vlm: bool = False
+    video_root_path: Path | None = None
+    vlm_model_path: Path | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

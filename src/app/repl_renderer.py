@@ -94,7 +94,7 @@ def render_repl_overview(overview: dict[str, Any]) -> str:
     else:
         result_table.add_row("status", "no persisted comparison report found")
     console.print(result_table)
-    console.print("Try: help | doctor | run mini | compare")
+    console.print("Try: help | set vlm on | run mini | compare")
 
     return console.export_text(styles=False)
 
@@ -153,6 +153,8 @@ def render_run_summary(summary: dict[str, Any]) -> str:
     summary_table.add_column("Field")
     summary_table.add_column("Value")
     summary_table.add_row("Stages", resolved_stages)
+    request = summary.get("request") or {}
+    summary_table.add_row("VLM Mode", "videollama3" if request.get("use_vlm") else "caption")
     compare = summary.get("compare") or {}
     summary_table.add_row("Compare Status", str(compare.get("status") or "missing"))
     console.print(summary_table)

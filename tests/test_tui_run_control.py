@@ -3,15 +3,28 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
-def test_build_default_run_request_for_mini_dataset(tmp_path: Path):
+
+def test_build_default_run_request_for_mini_dataset(monkeypatch, tmp_path: Path):
     from src.app.tui_app import build_default_run_request
 
+    monkeypatch.setenv("GPU_DEVICE", "1")
     repo_root = tmp_path
     request = build_default_run_request(repo_root=repo_root, preferred_dataset="ucf_crime", workflow_kind="mini")
 
     assert request.workflow_type.value == "mini"
+    assert request.gpu_device == "1"
     assert str(request.root_path).endswith("data\\ucf_crime_mini\\frames") or str(request.root_path).endswith("data/ucf_crime_mini/frames")
+
+
+def test_build_default_run_request_requires_gpu_device_env(monkeypatch, tmp_path: Path):
+    from src.app.tui_app import build_default_run_request
+
+    monkeypatch.delenv("GPU_DEVICE", raising=False)
+
+    with pytest.raises(ValueError, match="GPU_DEVICE"):
+        build_default_run_request(repo_root=tmp_path, preferred_dataset="ucf_crime", workflow_kind="mini")
 
 
 def test_apply_run_summary_updates_live_progress_and_recent_results(tmp_path: Path):
