@@ -23,6 +23,7 @@ class MvpWindowRun:
     window_artifact: MvpWindowArtifact
     window_receipt: MvpPublishReceipt
     prediction_payload_hash: str
+    prediction_record: dict[str, Any]
     retrieval_order: tuple[str, ...]
     view_orders: tuple[tuple[str, tuple[str, ...]], ...]
     retrieval_manifest_hash: str
@@ -220,6 +221,16 @@ def run_window(
         "window_id": str(window["window_id"]),
         "window_ordinal": ordinal,
     }
+    decision_fields = {"end_frame", "frame_count", "frame_interval", "start_frame"}
+    if decision_fields.issubset(window):
+        prediction_payload.update(
+            {
+                "end_frame": int(window["end_frame"]),
+                "frame_count": int(window["frame_count"]),
+                "frame_interval": int(window["frame_interval"]),
+                "start_frame": int(window["start_frame"]),
+            }
+        )
     prediction_hash = payload_hash(prediction_payload)
     artifact = MvpWindowArtifact(
         video_id=video_id,
@@ -267,6 +278,7 @@ def run_window(
         window_artifact=artifact,
         window_receipt=artifact_receipt,
         prediction_payload_hash=prediction_hash,
+        prediction_record=prediction_payload,
         retrieval_order=manifest.ordered_top_k,
         view_orders=manifest.view_orders,
         retrieval_manifest_hash=manifest_receipt.file_hash,

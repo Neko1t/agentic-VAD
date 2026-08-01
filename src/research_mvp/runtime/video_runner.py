@@ -190,6 +190,12 @@ def _inference_plan(
             "source_assets": list(bundle["source_assets"]),
             "source_manifest_sha256": str(bundle["source_manifest_sha256"]),
         }
+    if fixture.get("manifest_type") == "MVP_PRECOMPUTED_INPUT_V1":
+        plan["dataset_id"] = str(fixture["dataset_id"])
+        plan["decision_point_count"] = int(fixture["decision_point_count"])
+        plan["frame_interval"] = int(fixture["decision_stride_frames"])
+        plan["frame_rate"] = dict(fixture["frame_rate"])
+        plan["temporal_protocol"] = str(fixture["temporal_protocol"])
     return plan
 
 
@@ -421,11 +427,8 @@ def _run_inference(
             if memory_unavailable is not None:
                 sealed_predictions = [
                     {
-                        "prediction": item.window_artifact.prediction,
+                        **item.prediction_record,
                         "prediction_payload_hash": item.prediction_payload_hash,
-                        "video_id": video_id,
-                        "window_id": item.window_artifact.window_id,
-                        "window_ordinal": item.window_artifact.window_ordinal,
                     }
                     for item in window_runs
                 ]
@@ -461,11 +464,8 @@ def _run_inference(
         runs_tuple = tuple(window_runs)
         predictions = [
             {
-                "prediction": run.window_artifact.prediction,
+                **run.prediction_record,
                 "prediction_payload_hash": run.prediction_payload_hash,
-                "video_id": video_id,
-                "window_id": run.window_artifact.window_id,
-                "window_ordinal": run.window_artifact.window_ordinal,
             }
             for run in runs_tuple
         ]

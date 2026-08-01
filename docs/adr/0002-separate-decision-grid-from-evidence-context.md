@@ -1,0 +1,3 @@
+# Separate the prediction grid from evidence context
+
+The MVP preserves the original project's one-prediction-per-16-frames grid so frame-level ROC AUC and PR AUC remain comparable, while media evidence uses an independent approximately 10-second context. Offline protocols use centered context and causal protocols use trailing-only context; OCR and audio follow that evidence context, while B4 timing and frame projection follow the non-overlapping decision interval. This avoids the two rejected extremes: making 10-second clips the statistical samples, or limiting every evidence tool to only 16 frames.

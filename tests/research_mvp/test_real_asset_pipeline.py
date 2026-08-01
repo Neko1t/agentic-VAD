@@ -12,12 +12,15 @@ from src.research_mvp.adapters.real_assets import (
     MvpRealModelConfig,
     inspect_real_assets,
     load_asset_source_manifest,
+    load_precomputed_input,
     precompute_asset_bundle,
     smoke_evidence_direction,
 )
 from src.research_mvp.cli import main as cli_main
 from src.research_mvp.failures import MvpFailure
+from src.research_mvp.evaluator.metrics import DIRECT_B4_POSTPROCESS
 from src.research_mvp.launcher import run_asset_attempt, verify_frozen_attempt
+from src.research_mvp.media import OFFLINE_PROTOCOL, plan_video_windows
 from src.research_mvp.runtime.video_runner import run_precomputed_inference
 
 
@@ -30,9 +33,11 @@ class FakeRealBackends:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.embedding_inputs: list[str] = []
+        self.backend_windows: list[dict[str, Any]] = []
 
     def caption(self, window: Mapping[str, Any]) -> Mapping[str, Any]:
         self.calls.append(("CAPTION", str(window["window_id"])))
+        self.backend_windows.append(dict(window))
         text = "a quiet empty hallway" if "reference" in str(window["video_id"]) else "people fight near smoke"
         return {"backend_name": "fake-caption", "confidence": 0.9, "text": text}
 
@@ -155,6 +160,46 @@ def _bundle(tmp_path: Path) -> tuple[Any, FakeRealBackends, Path]:
     return receipt, backends, target_path
 
 
+def _upgrade_source_to_v1(source_path: Path) -> None:
+    source = json.loads(source_path.read_bytes())
+    source.update(
+        {
+            "decision_stride_frames": 16,
+            "evidence_context_frames": 160,
+            "frame_rate": {"denominator": 1, "numerator": 16},
+            "manifest_type": "MVP_REAL_ASSET_SOURCE_V1",
+            "temporal_protocol": OFFLINE_PROTOCOL,
+        }
+    )
+    for video in source["videos"]:
+        video["frame_count"] = 32
+        for window in video["windows"]:
+            window.update(
+                {
+                    "evidence_end_frame": 31,
+                    "evidence_end_us": 2_000_000,
+                    "evidence_start_frame": 0,
+                    "evidence_start_us": 0,
+                }
+            )
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+
+
+def _v1_bundle(tmp_path: Path) -> tuple[Any, FakeRealBackends, Path]:
+    asset_root, source_path, model_config, target_path = _write_asset_inputs(tmp_path)
+    _upgrade_source_to_v1(source_path)
+    backends = FakeRealBackends()
+    receipt = precompute_asset_bundle(
+        bundle_id="mvp-real-bundle-v1",
+        source_manifest_path=source_path,
+        asset_root=asset_root,
+        bundle_root=tmp_path / "data" / "agentic_outputs" / "mvp" / "precomputed" / "mvp-real-bundle-v1",
+        model_config=model_config,
+        backends=backends,
+    )
+    return receipt, backends, target_path
+
+
 def test_real_source_manifest_is_label_free_ordered_and_root_bound(tmp_path: Path) -> None:
     asset_root, source_path, _models, _targets = _write_asset_inputs(tmp_path)
     loaded = load_asset_source_manifest(source_path, asset_root)
@@ -178,6 +223,147 @@ def test_real_source_manifest_is_label_free_ordered_and_root_bound(tmp_path: Pat
     escaped_path.write_text(json.dumps(escaped), encoding="utf-8")
     with pytest.raises(MvpFailure, match="MVP_PATH_ESCAPE"):
         load_asset_source_manifest(escaped_path, asset_root)
+
+
+def test_v1_source_manifest_accepts_more_decisions_than_memory_capacity(tmp_path: Path) -> None:
+    asset_root = tmp_path / "assets"
+    (asset_root / "videos").mkdir(parents=True)
+    (asset_root / "frames").mkdir()
+    (asset_root / "audio").mkdir()
+    (asset_root / "videos" / "long.mp4").write_bytes(b"video")
+    (asset_root / "frames" / "shared.jpg").write_bytes(b"frame")
+    (asset_root / "audio" / "shared.wav").write_bytes(b"audio")
+    planned = plan_video_windows(
+        video_id="mvp-video-long",
+        frame_count=8208,
+        fps_num=30,
+        fps_den=1,
+        temporal_protocol=OFFLINE_PROTOCOL,
+    )
+    assert len(planned) == 513
+    windows = [
+        {
+            "audio_ref": "audio/shared.wav",
+            "delta_us": window.delta_us,
+            "end_frame": window.end_frame,
+            "end_us": window.end_us,
+            "evidence_end_frame": window.evidence_end_frame,
+            "evidence_end_us": window.evidence_end_us,
+            "evidence_start_frame": window.evidence_start_frame,
+            "evidence_start_us": window.evidence_start_us,
+            "frame_refs": ["frames/shared.jpg"],
+            "ordinal": window.ordinal,
+            "start_frame": window.start_frame,
+            "start_us": window.start_us,
+            "window_id": window.window_id,
+        }
+        for window in planned
+    ]
+    source = {
+        "dataset_id": "long-grid",
+        "decision_stride_frames": 16,
+        "evidence_context_frames": 300,
+        "frame_rate": {"denominator": 1, "numerator": 30},
+        "manifest_type": "MVP_REAL_ASSET_SOURCE_V1",
+        "runtime_profile": "RESEARCH_MVP",
+        "temporal_protocol": OFFLINE_PROTOCOL,
+        "videos": [
+            {
+                "frame_count": 8208,
+                "video_id": "mvp-video-long",
+                "video_ref": "videos/long.mp4",
+                "windows": windows,
+            }
+        ],
+    }
+    source_path = tmp_path / "source-v1.json"
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+
+    loaded = load_asset_source_manifest(source_path, asset_root)
+
+    assert len(loaded["videos"][0]["windows"]) == 513
+
+
+def test_v1_precompute_uses_evidence_context_and_freezes_decision_metadata(tmp_path: Path) -> None:
+    receipt, backends, _target_path = _v1_bundle(tmp_path)
+    prepared = json.loads(receipt.input_manifest_path.read_bytes())
+
+    assert prepared["manifest_type"] == "MVP_PRECOMPUTED_INPUT_V1"
+    assert prepared["adapter_identity"] == "PRECOMPUTED_REAL_ASSET_EVIDENCE_MVP_V1"
+    assert prepared["decision_point_count"] == 4
+    first_backend_window = backends.backend_windows[0]
+    assert (first_backend_window["start_frame"], first_backend_window["end_frame"]) == (0, 31)
+    assert (first_backend_window["decision_start_frame"], first_backend_window["decision_end_frame"]) == (0, 15)
+
+    materialized, _bundle_manifest, _resolver = load_precomputed_input(receipt.input_manifest_path)
+    first = materialized["videos"][0]["windows"][0]
+    assert first["frame_count"] == 32
+    assert (first["start_frame"], first["end_frame"]) == (0, 15)
+    assert (first["evidence_start_frame"], first["evidence_end_frame"]) == (0, 31)
+
+    summary = run_precomputed_inference(
+        attempt_id="mvp-real-v1-infer-a",
+        project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path,
+        memory_enabled=True,
+    )
+    prediction_path = (
+        Path(summary["output_attempt_root"])
+        / "inference"
+        / "predictions"
+        / "mvp-video-real-reference.jsonl"
+    )
+    prediction = json.loads(prediction_path.read_bytes().splitlines()[0])
+    assert prediction["frame_count"] == 32
+    assert prediction["frame_interval"] == 16
+    assert (prediction["start_frame"], prediction["end_frame"]) == (0, 15)
+
+
+def test_v1_outer_launcher_evaluates_frozen_predictions_at_frame_level(tmp_path: Path) -> None:
+    receipt, _backends, _old_targets = _v1_bundle(tmp_path)
+    target_path = tmp_path / "frame-targets-v1.json"
+    target_path.write_text(
+        json.dumps(
+            {
+                "dataset_id": "mvp-real-assets-test",
+                "experiment_config_id": "I3",
+                "frame_interval": 16,
+                "manifest_type": "MVP_FRAME_TARGETS_V1",
+                "normal_label": 0,
+                "postprocess_identity": DIRECT_B4_POSTPROCESS,
+                "temporal_protocol": OFFLINE_PROTOCOL,
+                "videos": [
+                    {
+                        "anomaly_intervals": [],
+                        "frame_count": 32,
+                        "video_id": "mvp-video-real-reference",
+                    },
+                    {
+                        "anomaly_intervals": [{"end_frame": 31, "start_frame": 0}],
+                        "frame_count": 32,
+                        "video_id": "mvp-video-real-salient",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_asset_attempt(
+        attempt_id="mvp-real-v1-outer-a",
+        project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path,
+        target_manifest_path=target_path,
+        memory_enabled=True,
+    )
+
+    assert result["status_code"] == "EVALUATION_COMPLETED"
+    metrics_path = tmp_path / "data" / "agentic_outputs" / "mvp" / "mvp-real-v1-outer-a" / result["metrics_ref"]
+    metrics = json.loads(metrics_path.read_bytes())
+    assert metrics["evaluation_level"] == "FRAME"
+    assert metrics["frame_count"] == 64
+    assert metrics["postprocess_identity"] == DIRECT_B4_POSTPROCESS
+    assert metrics["metrics"]["roc_auc"]["status"] == "DEFINED"
 
 
 def test_smoke_evidence_mapper_is_deterministic_bounded_and_conflict_abstains() -> None:

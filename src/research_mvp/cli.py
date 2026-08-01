@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from .adapters.real_assets import MvpRealModelConfig, inspect_real_assets, precompute_asset_bundle
 from .failures import MvpFailure
 from .launcher import compare_frozen_attempts
+from .media import (
+    MediaPreparationConfig,
+    MediaPreparationReceipt,
+    TEMPORAL_PROTOCOLS,
+    prepare_media_assets,
+)
 
 
 def _add_real_asset_arguments(parser: argparse.ArgumentParser) -> None:
@@ -29,6 +36,13 @@ def _real_model_config(args: argparse.Namespace) -> MvpRealModelConfig:
     )
 
 
+def _video_id(path: Path) -> str:
+    suffix = re.sub(r"[^a-z0-9]+", "-", path.stem.casefold()).strip("-")
+    if not suffix:
+        raise ValueError("video filename cannot produce a stable identity")
+    return f"mvp-video-{suffix}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.research_mvp.cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -41,10 +55,54 @@ def main(argv: list[str] | None = None) -> int:
     _add_real_asset_arguments(precompute_parser)
     precompute_parser.add_argument("--bundle-id", required=True)
     precompute_parser.add_argument("--bundle-root")
+    media_parser = subparsers.add_parser("prepare-real-media")
+    media_parser.add_argument("--video-dir", required=True)
+    media_parser.add_argument("--asset-root", required=True)
+    media_parser.add_argument("--source-manifest", required=True)
+    media_parser.add_argument("--dataset-id", required=True)
+    media_parser.add_argument("--temporal-protocol", choices=tuple(sorted(TEMPORAL_PROTOCOLS)), required=True)
+    media_parser.add_argument("--decision-stride-frames", type=int, default=16)
+    media_parser.add_argument("--evidence-context-frames", type=int, default=300)
+    media_parser.add_argument("--caption-fps", type=int, default=2)
+    media_parser.add_argument("--caption-max-frames", type=int, default=10)
+    media_parser.add_argument("--ffmpeg", default="ffmpeg")
+    media_parser.add_argument("--ffprobe", default="ffprobe")
     args = parser.parse_args(argv)
     try:
         if args.command == "compare-frozen":
             result = compare_frozen_attempts(Path.cwd(), args.left, args.right)
+        elif args.command == "prepare-real-media":
+            video_dir = Path(args.video_dir)
+            videos = tuple(
+                (_video_id(path), path)
+                for path in sorted(
+                    (item for item in video_dir.iterdir() if item.is_file() and item.suffix.casefold() == ".mp4"),
+                    key=lambda item: item.name.encode("utf-8"),
+                )
+            )
+            receipt = prepare_media_assets(
+                videos=videos,
+                asset_root=Path(args.asset_root),
+                source_manifest_path=Path(args.source_manifest),
+                config=MediaPreparationConfig(
+                    dataset_id=args.dataset_id,
+                    temporal_protocol=args.temporal_protocol,
+                    decision_stride_frames=args.decision_stride_frames,
+                    evidence_context_frames=args.evidence_context_frames,
+                    caption_fps=args.caption_fps,
+                    caption_max_frames=args.caption_max_frames,
+                    ffmpeg_executable=args.ffmpeg,
+                    ffprobe_executable=args.ffprobe,
+                ),
+            )
+            result = {
+                "cache_hit": receipt.cache_hit,
+                "source_manifest_path": str(receipt.source_manifest_path.resolve()),
+                "source_manifest_sha256": receipt.source_manifest_sha256,
+                "status_code": "MEDIA_ASSETS_REUSED" if receipt.cache_hit else "MEDIA_ASSETS_PREPARED",
+                "video_count": receipt.video_count,
+                "window_count": receipt.window_count,
+            }
         elif args.command == "inspect-real-assets":
             result = inspect_real_assets(
                 Path(args.source_manifest),

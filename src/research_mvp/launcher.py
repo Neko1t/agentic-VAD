@@ -164,25 +164,13 @@ def _publish_external_target_manifest(
         target_payload = loads(target_manifest_path.read_bytes())
     except Exception as exc:
         raise fatal("MVP_FREEZE_INVALID", "Evaluator target manifest is unreadable") from exc
-    if not isinstance(target_payload, dict) or set(target_payload) != {"records"}:
+    if not isinstance(target_payload, dict):
         raise fatal("MVP_FREEZE_INVALID", "Evaluator target manifest fields are invalid")
-    records = target_payload["records"]
-    if not isinstance(records, list) or not records:
-        raise fatal("MVP_FREEZE_INVALID", "Evaluator target manifest is empty")
-    target_keys: list[tuple[str, str]] = []
-    for record in records:
-        if not isinstance(record, dict) or set(record) != {"target", "video_id", "window_id"}:
-            raise fatal("MVP_FREEZE_INVALID", "Evaluator target record fields are invalid")
-        if record["target"] not in {0, 1}:
-            raise fatal("MVP_FREEZE_INVALID", "Evaluator target is not binary")
-        target_keys.append((str(record["video_id"]), str(record["window_id"])))
-    if len(target_keys) != len(set(target_keys)):
-        raise fatal("MVP_FREEZE_INVALID", "Evaluator target keys are duplicated")
 
-    expected_keys: list[tuple[str, str]] = []
     prediction_entries = [
         entry for entry in verified["output_manifest"]["entries"] if entry.get("artifact_type") == "predictions"
     ]
+    frozen_predictions: list[dict[str, Any]] = []
     for entry in prediction_entries:
         raw = resolve_relative(verified["inference_root"], str(entry["relative_ref"])).read_bytes()
         for line in raw.splitlines():
@@ -190,11 +178,134 @@ def _publish_external_target_manifest(
                 prediction = loads(line)
                 if not isinstance(prediction, dict):
                     raise fatal("MVP_FREEZE_INVALID", "frozen prediction record is invalid")
-                expected_keys.append((str(prediction["video_id"]), str(prediction["window_id"])))
-    if set(target_keys) != set(expected_keys) or len(target_keys) != len(expected_keys):
-        raise fatal("MVP_FREEZE_INVALID", "Evaluator targets do not cover the frozen predictions exactly")
-    ordered = sorted(records, key=lambda item: (str(item["video_id"]).encode("utf-8"), str(item["window_id"]).encode("utf-8")))
-    canonical_payload = {"records": ordered}
+                frozen_predictions.append(prediction)
+
+    if set(target_payload) == {"records"}:
+        records = target_payload["records"]
+        if not isinstance(records, list) or not records:
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator target manifest is empty")
+        target_keys: list[tuple[str, str]] = []
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {"target", "video_id", "window_id"}:
+                raise fatal("MVP_FREEZE_INVALID", "Evaluator target record fields are invalid")
+            if record["target"] not in {0, 1}:
+                raise fatal("MVP_FREEZE_INVALID", "Evaluator target is not binary")
+            target_keys.append((str(record["video_id"]), str(record["window_id"])))
+        if len(target_keys) != len(set(target_keys)):
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator target keys are duplicated")
+        expected_keys = [
+            (str(prediction["video_id"]), str(prediction["window_id"]))
+            for prediction in frozen_predictions
+        ]
+        if set(target_keys) != set(expected_keys) or len(target_keys) != len(expected_keys):
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator targets do not cover the frozen predictions exactly")
+        ordered = sorted(
+            records,
+            key=lambda item: (str(item["video_id"]).encode("utf-8"), str(item["window_id"]).encode("utf-8")),
+        )
+        canonical_payload = {"records": ordered}
+    else:
+        required = {
+            "dataset_id",
+            "experiment_config_id",
+            "frame_interval",
+            "manifest_type",
+            "normal_label",
+            "postprocess_identity",
+            "temporal_protocol",
+            "videos",
+        }
+        if set(target_payload) != required or target_payload.get("manifest_type") != "MVP_FRAME_TARGETS_V1":
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator frame target manifest fields are invalid")
+        if target_payload["frame_interval"] != 16 or target_payload["normal_label"] != 0:
+            raise fatal("MVP_FREEZE_INVALID", "formal frame evaluation requires interval 16 and normal label 0")
+        gaussian_configs = {"O0", "O1", "I0", "I1", "I2"}
+        direct_configs = {"I3", "I4", "C0", "C1", "S0"}
+        config_id = str(target_payload["experiment_config_id"])
+        expected_postprocess = (
+            "AUTHOR_GAUSSIAN_SIGMA_10"
+            if config_id in gaussian_configs
+            else "DIRECT_B4_NO_GAUSSIAN"
+            if config_id in direct_configs
+            else None
+        )
+        if expected_postprocess is None or target_payload["postprocess_identity"] != expected_postprocess:
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator postprocess configuration is invalid")
+        expected_temporal_protocol = (
+            "ZS-Independent-Offline"
+            if config_id in gaussian_configs or config_id in {"I3", "I4"}
+            else "ZS-Independent-Causal"
+            if config_id in {"C0", "C1"}
+            else "ZS-Stream-Causal"
+        )
+        if target_payload["temporal_protocol"] != expected_temporal_protocol:
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator temporal protocol configuration is invalid")
+        if (
+            verified["plan"].get("frame_interval") != 16
+            or verified["plan"].get("dataset_id") != target_payload["dataset_id"]
+            or verified["plan"].get("temporal_protocol") != target_payload["temporal_protocol"]
+        ):
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator frame targets do not match the frozen inference plan")
+        videos = target_payload["videos"]
+        if not isinstance(videos, list) or not videos:
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator frame target manifest is empty")
+        target_video_ids = [str(video.get("video_id")) for video in videos if isinstance(video, dict)]
+        if (
+            len(target_video_ids) != len(videos)
+            or len(target_video_ids) != len(set(target_video_ids))
+            or target_video_ids != sorted(target_video_ids, key=lambda value: value.encode("utf-8"))
+        ):
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator frame target videos are not canonical")
+        predictions_by_video: dict[str, list[dict[str, Any]]] = {}
+        for prediction in frozen_predictions:
+            predictions_by_video.setdefault(str(prediction["video_id"]), []).append(prediction)
+        if set(predictions_by_video) != set(target_video_ids):
+            raise fatal("MVP_FREEZE_INVALID", "Evaluator frame targets do not cover prediction videos exactly")
+        for video in videos:
+            if set(video) != {"anomaly_intervals", "frame_count", "video_id"}:
+                raise fatal("MVP_FREEZE_INVALID", "Evaluator frame target video fields are invalid")
+            video_id = str(video["video_id"])
+            frame_count = video["frame_count"]
+            if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
+                raise fatal("MVP_FREEZE_INVALID", "Evaluator target frame count is invalid")
+            ordered_predictions = sorted(
+                predictions_by_video[video_id], key=lambda item: int(item["window_ordinal"])
+            )
+            expected_count = (frame_count + 15) // 16
+            if len(ordered_predictions) != expected_count:
+                raise fatal("MVP_FREEZE_INVALID", "frozen prediction grid is incomplete")
+            for ordinal, prediction in enumerate(ordered_predictions):
+                expected_start = ordinal * 16
+                if (
+                    int(prediction.get("window_ordinal", -1)) != ordinal
+                    or int(prediction.get("start_frame", -1)) != expected_start
+                    or int(prediction.get("end_frame", -1)) != min(expected_start + 15, frame_count - 1)
+                    or int(prediction.get("frame_count", -1)) != frame_count
+                    or int(prediction.get("frame_interval", -1)) != 16
+                ):
+                    raise fatal("MVP_FREEZE_INVALID", "frozen prediction grid metadata is invalid")
+            intervals = video["anomaly_intervals"]
+            if not isinstance(intervals, list):
+                raise fatal("MVP_FREEZE_INVALID", "Evaluator anomaly intervals are invalid")
+            previous_start = -1
+            for interval in intervals:
+                if not isinstance(interval, dict) or set(interval) != {"end_frame", "start_frame"}:
+                    raise fatal("MVP_FREEZE_INVALID", "Evaluator anomaly interval fields are invalid")
+                start_frame = interval["start_frame"]
+                end_frame = interval["end_frame"]
+                if (
+                    isinstance(start_frame, bool)
+                    or isinstance(end_frame, bool)
+                    or not isinstance(start_frame, int)
+                    or not isinstance(end_frame, int)
+                    or start_frame < previous_start
+                    or start_frame < 0
+                    or end_frame < start_frame
+                    or end_frame >= frame_count
+                ):
+                    raise fatal("MVP_FREEZE_INVALID", "Evaluator anomaly interval is out of range")
+                previous_start = start_frame
+        canonical_payload = target_payload
     relative = f"evaluator_inputs/{evaluation_attempt_id}/targets.json"
     publisher = MvpImmutablePublisher(verified["attempt_root"], {"targets": relative})
     receipt = publisher.publish("targets", dumps(canonical_payload), payload_hash(canonical_payload))

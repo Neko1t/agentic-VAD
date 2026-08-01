@@ -15,11 +15,15 @@ from ..codec import dumps, loads, payload_hash
 from ..config import validate_inference_boundary
 from ..failures import MvpFailure, fatal
 from ..ids import validate_attempt_id, window_semantic_id
+from ..media import SOURCE_MANIFEST_TYPE as SOURCE_MANIFEST_TYPE_V1
+from ..media import TEMPORAL_PROTOCOLS, plan_video_windows
 
 
-SOURCE_MANIFEST_TYPE = "MVP_REAL_ASSET_SOURCE_V0"
-PRECOMPUTED_MANIFEST_TYPE = "MVP_PRECOMPUTED_INPUT_V0"
-ADAPTER_IDENTITY = "PRECOMPUTED_REAL_ASSET_EVIDENCE_MVP_V0"
+SOURCE_MANIFEST_TYPE_V0 = "MVP_REAL_ASSET_SOURCE_V0"
+PRECOMPUTED_MANIFEST_TYPE_V0 = "MVP_PRECOMPUTED_INPUT_V0"
+PRECOMPUTED_MANIFEST_TYPE_V1 = "MVP_PRECOMPUTED_INPUT_V1"
+ADAPTER_IDENTITY_V0 = "PRECOMPUTED_REAL_ASSET_EVIDENCE_MVP_V0"
+ADAPTER_IDENTITY_V1 = "PRECOMPUTED_REAL_ASSET_EVIDENCE_MVP_V1"
 SMOKE_MAPPER_IDENTITY = "MVP_SMOKE_TEXT_EVIDENCE_V0"
 
 _TOKEN = re.compile(r"[a-z0-9_]+")
@@ -162,20 +166,55 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
         raise fatal("ASSET_NOT_RUN", "source manifest or asset root is unavailable")
     source = _read_object(source_manifest_path, "ASSET_NOT_RUN")
     validate_inference_boundary(source)
-    if set(source) != {"dataset_id", "manifest_type", "runtime_profile", "videos"}:
+    manifest_type = source.get("manifest_type")
+    v1 = manifest_type == SOURCE_MANIFEST_TYPE_V1
+    required_root = (
+        {
+            "dataset_id",
+            "decision_stride_frames",
+            "evidence_context_frames",
+            "frame_rate",
+            "manifest_type",
+            "runtime_profile",
+            "temporal_protocol",
+            "videos",
+        }
+        if v1
+        else {"dataset_id", "manifest_type", "runtime_profile", "videos"}
+    )
+    if set(source) != required_root:
         raise fatal("MVP_FREEZE_INVALID", "source manifest fields are not closed")
-    if source["manifest_type"] != SOURCE_MANIFEST_TYPE or source["runtime_profile"] != RUNTIME_PROFILE:
+    if manifest_type not in {SOURCE_MANIFEST_TYPE_V0, SOURCE_MANIFEST_TYPE_V1} or source["runtime_profile"] != RUNTIME_PROFILE:
         raise fatal("MVP_FREEZE_INVALID", "source manifest profile is invalid")
     if not isinstance(source["dataset_id"], str) or not source["dataset_id"]:
         raise fatal("MVP_FREEZE_INVALID", "dataset identity is invalid")
+    fps_num = 0
+    fps_den = 0
+    decision_stride_frames = 0
+    evidence_context_frames = 0
+    temporal_protocol = ""
+    if v1:
+        rate = source["frame_rate"]
+        if not isinstance(rate, dict) or set(rate) != {"denominator", "numerator"}:
+            raise fatal("MVP_TIME_INVALID", "source frame rate fields are invalid")
+        fps_num = rate["numerator"]
+        fps_den = rate["denominator"]
+        decision_stride_frames = source["decision_stride_frames"]
+        evidence_context_frames = source["evidence_context_frames"]
+        for value in (fps_num, fps_den, decision_stride_frames, evidence_context_frames):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise fatal("MVP_TIME_INVALID", "source temporal parameters must be positive integers")
+        temporal_protocol = str(source["temporal_protocol"])
+        if temporal_protocol not in TEMPORAL_PROTOCOLS:
+            raise fatal("MVP_TIME_INVALID", "source temporal protocol is unregistered")
     videos = source["videos"]
     if not isinstance(videos, list) or not videos:
         raise fatal("MVP_FREEZE_INVALID", "source manifest requires ordered videos")
     seen_videos: set[str] = set()
     seen_windows: set[str] = set()
-    total_windows = 0
     for video in videos:
-        if not isinstance(video, dict) or set(video) != {"video_id", "video_ref", "windows"}:
+        required_video = {"frame_count", "video_id", "video_ref", "windows"} if v1 else {"video_id", "video_ref", "windows"}
+        if not isinstance(video, dict) or set(video) != required_video:
             raise fatal("MVP_FREEZE_INVALID", "source video fields are not closed")
         video_id = str(video["video_id"])
         try:
@@ -189,6 +228,22 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
         windows = video["windows"]
         if not isinstance(windows, list) or not windows:
             raise fatal("MVP_FREEZE_INVALID", "source video requires ordered windows")
+        expected_windows = None
+        if v1:
+            frame_count = video["frame_count"]
+            if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
+                raise fatal("MVP_TIME_INVALID", "source frame count is invalid")
+            expected_windows = plan_video_windows(
+                video_id=video_id,
+                frame_count=frame_count,
+                fps_num=fps_num,
+                fps_den=fps_den,
+                temporal_protocol=temporal_protocol,
+                decision_stride_frames=decision_stride_frames,
+                evidence_context_frames=evidence_context_frames,
+            )
+            if len(windows) != len(expected_windows):
+                raise fatal("MVP_WINDOW_ORDER_VIOLATION", "source prediction grid is incomplete")
         for expected_ordinal, window in enumerate(windows):
             required = {
                 "audio_ref",
@@ -201,6 +256,15 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
                 "start_us",
                 "window_id",
             }
+            if v1:
+                required.update(
+                    {
+                        "evidence_end_frame",
+                        "evidence_end_us",
+                        "evidence_start_frame",
+                        "evidence_start_us",
+                    }
+                )
             if not isinstance(window, dict) or set(window) != required:
                 raise fatal("MVP_FREEZE_INVALID", "source window fields are not closed")
             ordinal = window["ordinal"]
@@ -214,7 +278,12 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
             if window_id in seen_windows:
                 raise fatal("MVP_WINDOW_ORDER_VIOLATION", "duplicate source window")
             seen_windows.add(window_id)
-            for name in ("start_us", "end_us", "delta_us", "start_frame", "end_frame"):
+            integer_fields = ["start_us", "end_us", "delta_us", "start_frame", "end_frame"]
+            if v1:
+                integer_fields.extend(
+                    ["evidence_start_us", "evidence_end_us", "evidence_start_frame", "evidence_end_frame"]
+                )
+            for name in integer_fields:
                 value = window[name]
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise fatal("MVP_TIME_INVALID", "source time/frame facts must be integers")
@@ -222,15 +291,31 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
                 raise fatal("MVP_TIME_INVALID", "source interval is invalid")
             if window["start_frame"] < 0 or window["end_frame"] < window["start_frame"]:
                 raise fatal("MVP_TIME_INVALID", "source frame interval is invalid")
+            if window["delta_us"] != window["end_us"] - window["start_us"]:
+                raise fatal("MVP_TIME_INVALID", "source delta does not match decision boundaries")
+            if v1:
+                expected = expected_windows[expected_ordinal]
+                exact_fields = (
+                    "window_id",
+                    "ordinal",
+                    "start_frame",
+                    "end_frame",
+                    "start_us",
+                    "end_us",
+                    "delta_us",
+                    "evidence_start_frame",
+                    "evidence_end_frame",
+                    "evidence_start_us",
+                    "evidence_end_us",
+                )
+                if any(window[name] != getattr(expected, name) for name in exact_fields):
+                    raise fatal("MVP_WINDOW_ORDER_VIOLATION", "source temporal grid does not match its protocol")
             frame_refs = window["frame_refs"]
             if not isinstance(frame_refs, list) or not frame_refs:
                 raise fatal("ASSET_NOT_RUN", "source window has no frames")
             for frame_ref in frame_refs:
                 _require_file(asset_root, str(frame_ref))
             _require_file(asset_root, str(window["audio_ref"]))
-            total_windows += 1
-    if total_windows > 512:
-        raise fatal("MVP_CAPACITY_EXCEEDED", "real-asset static maximum Case count exceeds 512")
     return source
 
 
@@ -319,7 +404,15 @@ def _backend_window(video: Mapping[str, Any], window: Mapping[str, Any], asset_r
     return {
         **dict(window),
         "audio_path": str(_require_file(asset_root, str(window["audio_ref"]))),
+        "decision_end_frame": int(window["end_frame"]),
+        "decision_end_us": int(window["end_us"]),
+        "decision_start_frame": int(window["start_frame"]),
+        "decision_start_us": int(window["start_us"]),
+        "end_frame": int(window.get("evidence_end_frame", window["end_frame"])),
+        "end_us": int(window.get("evidence_end_us", window["end_us"])),
         "frame_paths": [str(_require_file(asset_root, str(ref))) for ref in window["frame_refs"]],
+        "start_frame": int(window.get("evidence_start_frame", window["start_frame"])),
+        "start_us": int(window.get("evidence_start_us", window["start_us"])),
         "video_id": str(video["video_id"]),
         "video_path": str(_require_file(asset_root, str(video["video_ref"]))),
     }
@@ -396,7 +489,10 @@ def _evidence_payload(
     direction, cues = smoke_evidence_direction(text)
     ordinal = int(window["ordinal"])
     atom_id = f"mvp-real-atom-{video_id.removeprefix('mvp-video-')}-{ordinal:04d}-{action.casefold()}"
-    interval = {"end_us": int(window["end_us"]), "start_us": int(window["start_us"])}
+    interval = {
+        "end_us": int(window.get("evidence_end_us", window["end_us"])),
+        "start_us": int(window.get("evidence_start_us", window["start_us"])),
+    }
     atoms = []
     risk_atom_ids = []
     if direction != 0.0:
@@ -471,6 +567,9 @@ def precompute_asset_bundle(
     if bundle_root.exists() or bundle_root.is_symlink():
         raise fatal("MVP_IMMUTABLE_PUBLISH_FAILED", "asset bundle root must be fresh")
     source = load_asset_source_manifest(source_manifest_path, asset_root)
+    v1 = source["manifest_type"] == SOURCE_MANIFEST_TYPE_V1
+    adapter_identity = ADAPTER_IDENTITY_V1 if v1 else ADAPTER_IDENTITY_V0
+    precomputed_manifest_type = PRECOMPUTED_MANIFEST_TYPE_V1 if v1 else PRECOMPUTED_MANIFEST_TYPE_V0
     source_assets = _source_inventory(source, asset_root)
     model_files = tuple(
         record
@@ -547,32 +646,56 @@ def precompute_asset_bundle(
                         "relative_ref": receipt.relative_ref,
                         "sha256": receipt.file_hash,
                     }
-                prepared_windows.append(
-                    {
-                        "delta_us": int(window["delta_us"]),
-                        "end_us": int(window["end_us"]),
-                        "evidence_artifacts": window_evidence,
-                        "ordinal": int(window["ordinal"]),
-                        "start_us": int(window["start_us"]),
-                        "window_id": str(window["window_id"]),
-                    }
-                )
-            prepared_videos.append({"video_id": str(video["video_id"]), "windows": prepared_windows})
+                prepared_window = {
+                    "delta_us": int(window["delta_us"]),
+                    "end_us": int(window["end_us"]),
+                    "evidence_artifacts": window_evidence,
+                    "ordinal": int(window["ordinal"]),
+                    "start_us": int(window["start_us"]),
+                    "window_id": str(window["window_id"]),
+                }
+                if v1:
+                    prepared_window.update(
+                        {
+                            "end_frame": int(window["end_frame"]),
+                            "evidence_end_frame": int(window["evidence_end_frame"]),
+                            "evidence_end_us": int(window["evidence_end_us"]),
+                            "evidence_start_frame": int(window["evidence_start_frame"]),
+                            "evidence_start_us": int(window["evidence_start_us"]),
+                            "start_frame": int(window["start_frame"]),
+                        }
+                    )
+                prepared_windows.append(prepared_window)
+            prepared_video = {"video_id": str(video["video_id"]), "windows": prepared_windows}
+            if v1:
+                prepared_video["frame_count"] = int(video["frame_count"])
+            prepared_videos.append(prepared_video)
     finally:
         backend.close()
 
     prepared = {
-        "adapter_identity": ADAPTER_IDENTITY,
+        "adapter_identity": adapter_identity,
         "bundle_id": bundle_id,
         "bundle_manifest_ref": "mvp_asset_bundle_manifest.json",
         "dataset_id": str(source["dataset_id"]),
-        "manifest_type": PRECOMPUTED_MANIFEST_TYPE,
+        "manifest_type": precomputed_manifest_type,
         "research_claim_status": RESEARCH_CLAIM_STATUS,
         "runtime_profile": RUNTIME_PROFILE,
         "source_manifest_sha256": file_sha256(source_manifest_path),
-        "static_max_case_count": sum(len(video["windows"]) for video in source["videos"]),
         "videos": prepared_videos,
     }
+    if v1:
+        prepared.update(
+            {
+                "decision_point_count": sum(len(video["windows"]) for video in source["videos"]),
+                "decision_stride_frames": int(source["decision_stride_frames"]),
+                "evidence_context_frames": int(source["evidence_context_frames"]),
+                "frame_rate": dict(source["frame_rate"]),
+                "temporal_protocol": str(source["temporal_protocol"]),
+            }
+        )
+    else:
+        prepared["static_max_case_count"] = sum(len(video["windows"]) for video in source["videos"])
     input_receipt = publisher.publish(
         "input",
         dumps(prepared),
@@ -589,7 +712,7 @@ def precompute_asset_bundle(
         "ocr_languages": list(model_config.ocr_languages),
     }
     bundle_manifest = {
-        "adapter_identity": ADAPTER_IDENTITY,
+        "adapter_identity": adapter_identity,
         "backend_identity": str(backend.identity),
         "bundle_id": bundle_id,
         "evidence_artifacts": evidence_records,
@@ -690,6 +813,8 @@ def load_precomputed_input(
         raise fatal("ASSET_NOT_RUN", "precomputed input manifest is unavailable")
     prepared = _read_object(input_manifest_path, "MVP_FREEZE_INVALID")
     validate_inference_boundary(prepared)
+    manifest_type = prepared.get("manifest_type")
+    v1 = manifest_type == PRECOMPUTED_MANIFEST_TYPE_V1
     required = {
         "adapter_identity",
         "bundle_id",
@@ -699,14 +824,27 @@ def load_precomputed_input(
         "research_claim_status",
         "runtime_profile",
         "source_manifest_sha256",
-        "static_max_case_count",
         "videos",
     }
+    if v1:
+        required.update(
+            {
+                "decision_point_count",
+                "decision_stride_frames",
+                "evidence_context_frames",
+                "frame_rate",
+                "temporal_protocol",
+            }
+        )
+        expected_adapter_identity = ADAPTER_IDENTITY_V1
+    else:
+        required.add("static_max_case_count")
+        expected_adapter_identity = ADAPTER_IDENTITY_V0
     if set(prepared) != required:
         raise fatal("MVP_FREEZE_INVALID", "precomputed input fields are not closed")
     if (
-        prepared["manifest_type"] != PRECOMPUTED_MANIFEST_TYPE
-        or prepared["adapter_identity"] != ADAPTER_IDENTITY
+        manifest_type not in {PRECOMPUTED_MANIFEST_TYPE_V0, PRECOMPUTED_MANIFEST_TYPE_V1}
+        or prepared["adapter_identity"] != expected_adapter_identity
         or prepared["runtime_profile"] != RUNTIME_PROFILE
         or prepared["research_claim_status"] != RESEARCH_CLAIM_STATUS
     ):
@@ -714,7 +852,7 @@ def load_precomputed_input(
     bundle_root = input_manifest_path.parent
     bundle_path = resolve_relative(bundle_root, str(prepared["bundle_manifest_ref"]))
     bundle = _read_object(bundle_path, "MVP_FREEZE_INVALID")
-    if bundle.get("bundle_id") != prepared["bundle_id"] or bundle.get("adapter_identity") != ADAPTER_IDENTITY:
+    if bundle.get("bundle_id") != prepared["bundle_id"] or bundle.get("adapter_identity") != expected_adapter_identity:
         raise fatal("MVP_FREEZE_INVALID", "asset bundle identity is invalid")
     input_entry = bundle.get("input_manifest")
     if not isinstance(input_entry, dict) or (
@@ -742,8 +880,12 @@ def load_precomputed_input(
 
     materialized = {key: value for key, value in prepared.items() if key != "videos"}
     videos: list[dict[str, Any]] = []
+    decision_point_count = 0
     for video in prepared["videos"]:
         video_id = str(video["video_id"])
+        frame_count = int(video["frame_count"]) if v1 else None
+        if v1 and frame_count <= 0:
+            raise fatal("MVP_TIME_INVALID", "precomputed frame count is invalid")
         windows: list[dict[str, Any]] = []
         for expected_ordinal, window in enumerate(video["windows"]):
             if int(window["ordinal"]) != expected_ordinal:
@@ -757,17 +899,35 @@ def load_precomputed_input(
                     or str(entry["sha256"]) != str(entry["payload_hash"])
                 ):
                     raise fatal("MVP_FREEZE_INVALID", "window evidence binding is invalid")
-            windows.append(
-                {
-                    "delta_us": int(window["delta_us"]),
-                    "end_us": int(window["end_us"]),
-                    "evidence_artifacts": dict(window["evidence_artifacts"]),
-                    "ordinal": int(window["ordinal"]),
-                    "start_us": int(window["start_us"]),
-                    "window_id": str(window["window_id"]),
-                }
-            )
-        videos.append({"video_id": video_id, "windows": windows})
+            materialized_window = {
+                "delta_us": int(window["delta_us"]),
+                "end_us": int(window["end_us"]),
+                "evidence_artifacts": dict(window["evidence_artifacts"]),
+                "ordinal": int(window["ordinal"]),
+                "start_us": int(window["start_us"]),
+                "window_id": str(window["window_id"]),
+            }
+            if v1:
+                materialized_window.update(
+                    {
+                        "end_frame": int(window["end_frame"]),
+                        "evidence_end_frame": int(window["evidence_end_frame"]),
+                        "evidence_end_us": int(window["evidence_end_us"]),
+                        "evidence_start_frame": int(window["evidence_start_frame"]),
+                        "evidence_start_us": int(window["evidence_start_us"]),
+                        "frame_count": frame_count,
+                        "frame_interval": int(prepared["decision_stride_frames"]),
+                        "start_frame": int(window["start_frame"]),
+                    }
+                )
+            windows.append(materialized_window)
+            decision_point_count += 1
+        materialized_video = {"video_id": video_id, "windows": windows}
+        if v1:
+            materialized_video["frame_count"] = frame_count
+        videos.append(materialized_video)
+    if v1 and decision_point_count != int(prepared["decision_point_count"]):
+        raise fatal("MVP_WINDOW_ORDER_VIOLATION", "precomputed decision point count is invalid")
     materialized["videos"] = videos
     materialized["asset_bundle_manifest_sha256"] = file_sha256(bundle_path)
     materialized["asset_bundle_manifest"] = bundle
