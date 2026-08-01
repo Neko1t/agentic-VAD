@@ -190,6 +190,15 @@ def test_prepare_media_builds_v1_manifest_from_evidence_context(tmp_path: Path) 
     assert audio_command[audio_command.index("-c:a") + 1] == "pcm_s16le"
 
 
+def test_prepare_media_uses_ffmpeg_44_compatible_passthrough(tmp_path: Path) -> None:
+    runner = FakeMediaCommands()
+    _prepared_media(tmp_path, runner)
+
+    frame_command = next(command for command in runner.commands if command[0] == "ffmpeg" and "-vf" in command)
+    assert frame_command[frame_command.index("-vsync") + 1] == "0"
+    assert "-fps_mode" not in frame_command
+
+
 def test_prepare_media_cache_requires_every_output_hash(tmp_path: Path) -> None:
     first_runner = FakeMediaCommands()
     asset_root, first = _prepared_media(tmp_path, first_runner)
