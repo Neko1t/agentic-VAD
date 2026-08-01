@@ -28,6 +28,7 @@ class Asset:
     note: str
     modelscope_repo: str | None = None
     hf_repo: str | None = None
+    hf_allow_patterns: tuple[str, ...] = ()
     gdrive_url: str | None = None
     manual_url: str | None = None
     gated: bool = False
@@ -41,24 +42,74 @@ ASSETS: tuple[Asset, ...] = (
         title="Embedding model for memory retrieval",
         category="model",
         target="libs/embeddings/bge-base-en-v1.5",
-        required_now=False,
+        required_now=True,
         mode="download",
-        note="Used by EmbeddingBuilder. The code can fall back to a deterministic local embedder, but real retrieval quality depends on this model.",
+        note="Required by the real-asset MVP embedding backend; fallback embeddings are forbidden.",
         modelscope_repo="BAAI/bge-base-en-v1.5",
         hf_repo="BAAI/bge-base-en-v1.5",
+        markers=(
+            "libs/embeddings/bge-base-en-v1.5/config.json",
+            "libs/embeddings/bge-base-en-v1.5/model.safetensors",
+        ),
         completion_marker=".asset_status/bge-base-en-v1.5.done",
     ),
     Asset(
         asset_id="videollama3-7b",
-        title="Future real VLM backend",
+        title="Real-asset MVP caption model",
         category="model",
         target="libs/videollama3/VideoLLaMA3-7B",
-        required_now=False,
+        required_now=True,
         mode="download",
-        note="Planned replacement for the current caption-json VLM path. Large download.",
+        note="Required by the real-asset MVP caption backend. Large download.",
         modelscope_repo="DAMO-NLP-SG/VideoLLaMA3-7B",
         hf_repo="DAMO-NLP-SG/VideoLLaMA3-7B",
+        markers=(
+            "libs/videollama3/VideoLLaMA3-7B/config.json",
+            "libs/videollama3/VideoLLaMA3-7B/model.safetensors.index.json",
+            "libs/videollama3/VideoLLaMA3-7B/model-00001-of-00004.safetensors",
+            "libs/videollama3/VideoLLaMA3-7B/model-00002-of-00004.safetensors",
+            "libs/videollama3/VideoLLaMA3-7B/model-00003-of-00004.safetensors",
+            "libs/videollama3/VideoLLaMA3-7B/model-00004-of-00004.safetensors",
+        ),
         completion_marker=".asset_status/videollama3-7b.done",
+    ),
+    Asset(
+        asset_id="easyocr-en",
+        title="Real-asset MVP English OCR models",
+        category="model",
+        target="libs/ocr/easyocr",
+        required_now=True,
+        mode="easyocr",
+        note="Downloads the CRAFT detector and English generation-2 recognizer used by EasyOCR in offline mode.",
+        markers=(
+            "libs/ocr/easyocr/craft_mlt_25k.pth",
+            "libs/ocr/easyocr/english_g2.pth",
+        ),
+        completion_marker=".asset_status/easyocr-en.done",
+    ),
+    Asset(
+        asset_id="faster-whisper-small",
+        title="Real-asset MVP audio transcription model",
+        category="model",
+        target="libs/audio/faster-whisper-small",
+        required_now=True,
+        mode="download",
+        note="CTranslate2 Whisper small checkpoint used by the real-asset MVP audio backend.",
+        hf_repo="Systran/faster-whisper-small",
+        hf_allow_patterns=(
+            "config.json",
+            "preprocessor_config.json",
+            "model.bin",
+            "tokenizer.json",
+            "vocabulary.*",
+        ),
+        markers=(
+            "libs/audio/faster-whisper-small/config.json",
+            "libs/audio/faster-whisper-small/preprocessor_config.json",
+            "libs/audio/faster-whisper-small/model.bin",
+            "libs/audio/faster-whisper-small/tokenizer.json",
+        ),
+        completion_marker=".asset_status/faster-whisper-small.done",
     ),
     Asset(
         asset_id="llama-3.1-8b-instruct",
@@ -156,6 +207,12 @@ ASSETS: tuple[Asset, ...] = (
 PRESETS: dict[str, tuple[str, ...]] = {
     "list-now": tuple(asset.asset_id for asset in ASSETS if asset.required_now),
     "models-core": ("bge-base-en-v1.5",),
+    "models-mvp": (
+        "bge-base-en-v1.5",
+        "videollama3-7b",
+        "easyocr-en",
+        "faster-whisper-small",
+    ),
     "models-all": ("bge-base-en-v1.5", "videollama3-7b", "llama-3.1-8b-instruct"),
     "bootstrap": (
         "preprocessed-annotation-bundle",
@@ -226,10 +283,15 @@ def ensure_dir(path: Path) -> None:
 
 
 def asset_ready(asset: Asset, root: Path) -> bool:
-    if asset.completion_marker is not None:
-        return (root / asset.completion_marker).exists()
     if asset.markers:
-        return all((root / marker).exists() for marker in asset.markers)
+        marker_paths = (root / marker for marker in asset.markers)
+        marker_ready = all(path.is_file() if asset.category == "model" else path.exists() for path in marker_paths)
+        if not marker_ready:
+            return False
+    if asset.completion_marker is not None and not (root / asset.completion_marker).is_file():
+        return False
+    if asset.markers or asset.completion_marker is not None:
+        return True
     return (root / asset.target).exists()
 
 
@@ -255,8 +317,7 @@ def download_hf_mirror(asset: Asset, dest: Path, token: str | None) -> None:
         repo_id=asset.hf_repo,
         local_dir=str(dest),
         token=token,
-        local_dir_use_symlinks=False,
-        resume_download=True,
+        allow_patterns=list(asset.hf_allow_patterns) or None,
     )
 
 
@@ -314,6 +375,23 @@ def perform_download(asset: Asset, args: argparse.Namespace) -> str:
             ensure_dir(marker.parent)
             marker.write_text("downloaded\n", encoding="utf-8")
         return f"Downloaded support bundle into {target}"
+
+    if asset.mode == "easyocr":
+        import easyocr
+
+        ensure_dir(target)
+        easyocr.Reader(
+            ["en"],
+            gpu=False,
+            model_storage_directory=str(target),
+            user_network_directory=str(target),
+            download_enabled=True,
+        )
+        if asset.completion_marker is not None:
+            marker = root / asset.completion_marker
+            ensure_dir(marker.parent)
+            marker.write_text(f"{asset.asset_id}\n", encoding="utf-8")
+        return f"Downloaded EasyOCR weights into {target}"
 
     if asset.mode == "download":
         source = args.source

@@ -1,0 +1,3 @@
+# Keep the Real-Asset MVP Model Set in Persistent Storage
+
+The AutoDL migration keeps VideoLLaMA3, EasyOCR English, faster-whisper-small, and bge-base-en-v1.5 in persistent file storage because together they remain below the 20 GiB cost threshold and are all required by real-asset MVP precomputation. Llama 3.1 8B is excluded because it belongs to the legacy baseline path; if later required, it will use the local data disk instead of paid persistent storage. MVP commands use the physical `/autodl-fs/data` path because `/root/autodl-fs` is a symbolic-link convenience path rejected by the MVP path-identity guard.
