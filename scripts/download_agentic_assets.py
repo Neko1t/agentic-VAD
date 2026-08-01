@@ -105,7 +105,6 @@ ASSETS: tuple[Asset, ...] = (
         ),
         markers=(
             "libs/audio/faster-whisper-small/config.json",
-            "libs/audio/faster-whisper-small/preprocessor_config.json",
             "libs/audio/faster-whisper-small/model.bin",
             "libs/audio/faster-whisper-small/tokenizer.json",
         ),

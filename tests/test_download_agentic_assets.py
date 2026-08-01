@@ -57,6 +57,23 @@ def test_faster_whisper_download_is_limited_to_runtime_files() -> None:
     )
 
 
+def test_faster_whisper_is_ready_without_optional_preprocessor_config(tmp_path) -> None:
+    asset = downloader.asset_map()["faster-whisper-small"]
+    marker = tmp_path / str(asset.completion_marker)
+    marker.parent.mkdir(parents=True)
+    marker.write_text("faster-whisper-small\n", encoding="utf-8")
+    for relative in (
+        "libs/audio/faster-whisper-small/config.json",
+        "libs/audio/faster-whisper-small/model.bin",
+        "libs/audio/faster-whisper-small/tokenizer.json",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"complete")
+
+    assert downloader.asset_ready(asset, tmp_path)
+
+
 def test_hf_download_passes_runtime_file_filter(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
