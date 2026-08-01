@@ -1,0 +1,17 @@
+{
+  "fixture_id": "mvp-three-video-causal-v0",
+  "query_video_id": "mvp-video-c-query",
+  "query_window_id": "mvp-video-c-query-window-0000",
+  "view_order": ["DENSE", "SPARSE_BM25", "TEMPORAL"],
+  "views": {
+    "DENSE": ["mvp-case-b-salient-0000", "mvp-case-a-reference-0000"],
+    "SPARSE_BM25": ["mvp-case-b-salient-0000", "mvp-case-a-reference-0000"],
+    "TEMPORAL": ["mvp-case-b-salient-0000", "mvp-case-a-reference-0000"]
+  },
+  "rrf_order": ["mvp-case-b-salient-0000", "mvp-case-a-reference-0000"],
+  "ordered_top_k": ["mvp-case-b-salient-0000", "mvp-case-a-reference-0000"],
+  "payload_hashes": {
+    "mvp-case-a-reference-0000": "4b54885207c2985d2816958d706b35c0d085f1faf35b784cf9afd9f310c1a568",
+    "mvp-case-b-salient-0000": "aa6635fbe71b2362719aae8533df230b6fa9ba15777005c72c5d811e6da8d252"
+  }
+}
