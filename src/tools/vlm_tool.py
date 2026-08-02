@@ -203,11 +203,12 @@ class VideoLLaMABackend:
                         inputs[key] = value.to(device, dtype=float_dtype)
                     else:
                         inputs[key] = value.to(device)
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-            )
+            generation_options = {"max_new_tokens": self.max_new_tokens}
+            if self.temperature == 0.0:
+                generation_options["do_sample"] = False
+            else:
+                generation_options["temperature"] = self.temperature
+            output_ids = model.generate(**inputs, **generation_options)
             caption = processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
         return {
             "vision_caption": caption,
