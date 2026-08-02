@@ -10,9 +10,10 @@ from ..contracts import MvpB2Output, MvpB4Commit, MvpEpisode, MvpInterval, MvpRe
 from ..evidence.adapters import PrecomputedEvidenceAdapter
 from ..evidence.b3_lite import MvpB3LiteResult, run_b3_lite
 from ..math.b4 import B4Committer
-from ..math.b6 import fuse_b6
+from ..math.b6 import fuse_b6_detailed
 from ..memory.episode import EpisodeBuilder
 from ..memory.retrieval import MvpRetrievalQuery, PayloadFirewall, accept_manifest, rank_key_only
+from .diagnostics import build_window_diagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,8 @@ class MvpWindowRun:
     b4: MvpB4Commit
     window_artifact: MvpWindowArtifact
     window_receipt: MvpPublishReceipt
+    diagnostic: dict[str, Any]
+    diagnostic_receipt: MvpPublishReceipt
     prediction_payload_hash: str
     prediction_record: dict[str, Any]
     retrieval_order: tuple[str, ...]
@@ -199,14 +202,15 @@ def run_window(
 
     bundle = PayloadFirewall(load_payload).unlock(manifest)
     causal_chain.append("PAYLOAD_UNLOCKED")
-    final_b6 = fuse_b6(
+    b6_result = fuse_b6_detailed(
         final_b2,
         bundle,
         memory_enabled=True if memory_status_override is not None else memory_enabled,
         empty_status=memory_status_override or "EMPTY_IDENTITY",
     )
+    final_b6 = b6_result.output
     causal_chain.append("B6_FINAL")
-    b4 = b4_committer.commit(
+    b4_result = b4_committer.commit_with_audit(
         video_id,
         str(window["window_id"]),
         ordinal,
@@ -214,6 +218,7 @@ def run_window(
         final_b2,
         final_b6,
     )
+    b4 = b4_result.commit
     causal_chain.append("B4_COMMITTED")
     prediction_payload = {
         "prediction": b4.z,
@@ -256,6 +261,33 @@ def run_window(
         ),
     )
     causal_chain.append("WINDOW_ARTIFACT_ACCEPTED")
+    diagnostic = build_window_diagnostic(
+        window=window,
+        base_result=base,
+        b3=b3,
+        b6=final_b6,
+        b6_audit=b6_result.audit,
+        b4=b4,
+        b4_audit=b4_result.audit,
+        window_artifact=artifact,
+        window_receipt=artifact_receipt,
+        prediction_payload_hash=prediction_hash,
+    )
+    diagnostic_bytes = dumps(diagnostic)
+    diagnostic_parents = (
+        artifact_receipt.file_hash,
+        *(
+            str(item["payload_hash"])
+            for item in diagnostic["evidence_artifacts"]
+            if item["payload_hash"] is not None
+        ),
+    )
+    diagnostic_receipt = publisher.publish(
+        f"diagnostic-window:{video_id}:{window['window_id']}",
+        diagnostic_bytes,
+        payload_hash(diagnostic),
+        parent_payload_hashes=diagnostic_parents,
+    )
     closed_episodes = episode_builder.feed(ordinal, b4.state, artifact_accepted=artifact_receipt.accepted)
     causal_chain.append("EPISODE_UPDATED")
     trace = {
@@ -267,6 +299,7 @@ def run_window(
         "final_b6_count": 1,
         "b4_commit_count": 1,
         "window_artifact_count": 1,
+        "diagnostic_artifact_count": 1,
         "payload_read_after_manifest_acceptance": manifest_accepted and all(accepted for _, accepted in payload_reads),
         "payload_read_case_ids": [case_id for case_id, _ in payload_reads],
         "memory_status": final_b6.memory_status,
@@ -277,6 +310,8 @@ def run_window(
         b4=b4,
         window_artifact=artifact,
         window_receipt=artifact_receipt,
+        diagnostic=diagnostic,
+        diagnostic_receipt=diagnostic_receipt,
         prediction_payload_hash=prediction_hash,
         prediction_record=prediction_payload,
         retrieval_order=manifest.ordered_top_k,

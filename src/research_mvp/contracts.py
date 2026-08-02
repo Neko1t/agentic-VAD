@@ -266,8 +266,10 @@ class MvpEvaluatorLaunchPlan:
     inference_freeze_hash: str
     annotation_manifest_ref: str
     readable_refs: tuple[str, ...]
+    diagnostic_refs: tuple[str, ...]
     allowed_inputs: tuple[dict[str, Any], ...]
     metrics_ref: str
+    diagnostic_report_ref: str
     receipt_ref: str
     runtime_profile: str
     research_claim_status: str

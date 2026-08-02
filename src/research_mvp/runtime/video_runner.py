@@ -23,6 +23,7 @@ from ..memory.episode import EpisodeBuilder, MvpEpisodeWindow, summarize_episode
 from ..memory.retrieval_key import build_retrieval_key
 from ..memory.snapshot import MvpMemoryWriter, read_snapshot
 from .inference_freeze import publish_inference_freeze, publish_memory_freeze, publish_output_manifest
+from .diagnostics import build_diagnostic_index_record
 from .window_runner import MvpWindowRun, _base_raw, case_capabilities, run_window
 
 
@@ -41,6 +42,7 @@ def _planned_targets(fixture: Mapping[str, Any]) -> dict[str, str]:
         "plan": "mvp_inference_plan.json",
         "trace:window": "traces/window_trace.jsonl",
         "trace:tool": "traces/tool_trace.jsonl",
+        "diagnostic-index": "diagnostics/window_diagnostics.jsonl",
         "summary": "mvp_semantic_summary.json",
         "freeze:output": "freezes/mvp_output_hash_manifest.json",
         "freeze:memory": "freezes/mvp_memory_freeze.json",
@@ -54,6 +56,7 @@ def _planned_targets(fixture: Mapping[str, Any]) -> dict[str, str]:
             window_id = str(window["window_id"])
             targets[f"manifest:{video_id}:{window_id}"] = f"retrieval_manifests/{video_id}/{window_id}.json"
             targets[f"window:{video_id}:{window_id}"] = f"window_artifacts/{video_id}/{window_id}.json"
+            targets[f"diagnostic-window:{video_id}:{window_id}"] = f"diagnostics/windows/{video_id}/{window_id}.json"
     return targets
 
 
@@ -538,8 +541,12 @@ def _run_inference(
     window_trace_records = [run.trace for run in all_window_runs]
     tool_trace_records = [
         {
+            "accepted": trace.accepted,
             "action": trace.action,
+            "b2_delta": None if trace.b2_delta is None else asdict(trace.b2_delta),
+            "contributed": trace.contributed,
             "failure_code": trace.failure_code,
+            "informative": trace.informative,
             "raw_payload_hash": trace.raw_payload_hash,
             "status": trace.status,
             "eligibility_reasons": list(trace.eligibility_reasons),
@@ -569,6 +576,17 @@ def _run_inference(
         bytes_sha256(tool_trace_bytes),
         parent_payload_hashes=tool_parents or (str(plan["fixture_sha256"]),),
     )
+    diagnostic_index_records = [
+        build_diagnostic_index_record(run.diagnostic, run.diagnostic_receipt)
+        for run in all_window_runs
+    ]
+    diagnostic_index_bytes = _jsonl(diagnostic_index_records)
+    diagnostic_index_receipt = publisher.publish(
+        "diagnostic-index",
+        diagnostic_index_bytes,
+        bytes_sha256(diagnostic_index_bytes),
+        parent_payload_hashes=tuple(run.diagnostic_receipt.file_hash for run in all_window_runs),
+    )
     final_snapshot = read_snapshot(config.memory_root)
     semantic_cases = [
         {key: value for key, value in case.items() if key != "source_prediction_freeze_hash"}
@@ -577,6 +595,8 @@ def _run_inference(
     memory_semantic_hash = payload_hash({"cases": semantic_cases})
     semantic_summary = {
         "fixture_input_hash": file_sha256(input_manifest_path),
+        "diagnostic_index_hash": diagnostic_index_receipt.file_hash,
+        "diagnostic_window_count": len(diagnostic_index_records),
         "memory_semantic_payload_hash": memory_semantic_hash,
         "prediction_payload_hashes": [run.prediction_payload_hash for run in all_window_runs],
         "raw_b2_payload_hashes": [payload_hash(asdict(run.final_b2)) for run in all_window_runs],

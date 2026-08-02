@@ -1,6 +1,6 @@
 # Agentic VAD Experiment Context
 
-This context defines the language used to distinguish reproducible MVP experiment assets from optional legacy reproduction assets.
+This context defines the language used to distinguish reproducible MVP experiment assets from optional legacy reproduction assets and to explain experiment behavior without contaminating inference with evaluator knowledge.
 
 ## Language
 
@@ -35,3 +35,23 @@ _Avoid_: window target, clip sample
 **Temporal Protocol**:
 The registered policy that fixes Prediction Grid cadence, Evidence Context direction, and evaluator postprocessing for an experiment configuration.
 _Avoid_: window size, preprocessing preset
+
+**Accepted Evidence**:
+Evidence whose artifact identity and protocol contract were validated. Acceptance says nothing about semantic value or score impact.
+_Avoid_: Useful evidence, contributing evidence
+
+**Informative Evidence**:
+Accepted evidence that contains non-neutral semantic support or opposition relevant to anomaly interpretation.
+_Avoid_: Accepted evidence, non-empty evidence
+
+**Contributed Evidence**:
+Accepted evidence that numerically changed a downstream experiment score. Contribution does not imply that the change was correct or beneficial.
+_Avoid_: Informative evidence, helpful evidence
+
+**Inference Diagnostic**:
+An immutable, label-free account of the decision inputs, evidence states, score changes, and lineage for one accepted inference window.
+_Avoid_: Evaluation trace, reasoning transcript
+
+**Evaluator Diagnostic Report**:
+A post-freeze report that joins inference diagnostics with evaluator targets to compare stage behavior against formal outcomes.
+_Avoid_: Inference diagnostic, training signal

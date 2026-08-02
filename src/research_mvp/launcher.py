@@ -21,6 +21,7 @@ from .failures import MvpFailure, fatal
 from .ids import validate_attempt_id
 from .memory.snapshot import read_snapshot
 from .runtime.video_runner import compare_semantic_runs, run_precomputed_inference, run_synthetic_inference
+from .runtime.diagnostics import DIAGNOSTIC_SCHEMA_VERSION, assert_label_free_diagnostic
 
 
 def _repo_root() -> Path:
@@ -55,6 +56,108 @@ def _hash_inventory(inference_root: Path, memory_root: Path) -> dict[str, str]:
         for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.as_posix().encode("utf-8")):
             inventory[f"{prefix}/{path.relative_to(root).as_posix()}"] = file_sha256(path)
     return inventory
+
+
+def _decode_jsonl(path: Path) -> tuple[dict[str, Any], ...]:
+    records: list[dict[str, Any]] = []
+    try:
+        for line in path.read_bytes().splitlines():
+            if not line:
+                continue
+            value = loads(line)
+            if not isinstance(value, dict):
+                raise ValueError("record is not an object")
+            records.append(value)
+    except Exception as exc:
+        raise fatal("MVP_FREEZE_INVALID", "registered JSONL artifact is unreadable") from exc
+    return tuple(records)
+
+
+def _verify_window_diagnostics(
+    *,
+    inference_root: Path,
+    entries: list[dict[str, Any]],
+    video_order: list[Any],
+) -> None:
+    prediction_entries = [entry for entry in entries if entry.get("artifact_type") == "predictions"]
+    predictions: list[dict[str, Any]] = []
+    for entry in prediction_entries:
+        predictions.extend(_decode_jsonl(resolve_relative(inference_root, str(entry["relative_ref"]))))
+    order_by_video = {str(video_id): ordinal for ordinal, video_id in enumerate(video_order)}
+    try:
+        expected = tuple(
+            sorted(
+                (
+                    (str(item["video_id"]), str(item["window_id"]), int(item["window_ordinal"]))
+                    for item in predictions
+                ),
+                key=lambda item: (order_by_video[item[0]], item[2]),
+            )
+        )
+    except Exception as exc:
+        raise fatal("MVP_FREEZE_INVALID", "frozen prediction keys are invalid") from exc
+    if not expected or len(expected) != len(set((video_id, window_id) for video_id, window_id, _ in expected)):
+        raise fatal("MVP_FREEZE_INVALID", "frozen prediction window set is invalid")
+
+    diagnostic_entries = [entry for entry in entries if entry.get("artifact_type") == "diagnostic-window"]
+    index_entries = [entry for entry in entries if entry.get("artifact_type") == "diagnostic-index"]
+    if len(diagnostic_entries) != len(expected) or len(index_entries) != 1:
+        raise fatal("MVP_FREEZE_INVALID", "mandatory diagnostic artifact set is incomplete")
+    diagnostics: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
+    for entry in diagnostic_entries:
+        path = resolve_relative(inference_root, str(entry["relative_ref"]))
+        diagnostic = _decode_object(path)
+        try:
+            assert_label_free_diagnostic(diagnostic)
+            key = (str(diagnostic["video_id"]), str(diagnostic["window_id"]))
+            ordinal = int(diagnostic["window_ordinal"])
+            if diagnostic.get("schema_version") != DIAGNOSTIC_SCHEMA_VERSION or key in diagnostics:
+                raise ValueError("schema or key mismatch")
+            if (key[0], key[1], ordinal) not in expected:
+                raise ValueError("unexpected diagnostic window")
+            window_ref = str(diagnostic["lineage"]["window_artifact_ref"])
+            window_entry = next(item for item in entries if str(item["relative_ref"]) == window_ref)
+            if (
+                window_entry.get("artifact_type") != "window"
+                or str(window_entry["sha256"]) not in entry["parent_payload_hashes"]
+            ):
+                raise ValueError("window parent binding mismatch")
+            raw_hashes = {
+                str(item["payload_hash"])
+                for item in diagnostic["evidence_artifacts"]
+                if item["payload_hash"] is not None
+            }
+            if not raw_hashes.issubset(set(str(value) for value in entry["parent_payload_hashes"])):
+                raise ValueError("raw evidence parent binding mismatch")
+        except Exception as exc:
+            raise fatal("MVP_FREEZE_INVALID", "window diagnostic contract is invalid") from exc
+        diagnostics[key] = (diagnostic, entry)
+    if set(diagnostics) != set((video_id, window_id) for video_id, window_id, _ in expected):
+        raise fatal("MVP_FREEZE_INVALID", "window diagnostic coverage is incomplete")
+
+    index_entry = index_entries[0]
+    index_records = _decode_jsonl(resolve_relative(inference_root, str(index_entry["relative_ref"])))
+    index_keys = tuple(
+        (str(item["video_id"]), str(item["window_id"]), int(item["window_ordinal"]))
+        for item in index_records
+    )
+    if index_keys != expected:
+        raise fatal("MVP_FREEZE_INVALID", "diagnostic index order or coverage is invalid")
+    if set(str(value) for value in index_entry["parent_payload_hashes"]) != {
+        str(entry["sha256"]) for _diagnostic, entry in diagnostics.values()
+    }:
+        raise fatal("MVP_FREEZE_INVALID", "diagnostic index parent binding is invalid")
+    for record in index_records:
+        try:
+            assert_label_free_diagnostic(record)
+            key = (str(record["video_id"]), str(record["window_id"]))
+            _diagnostic, entry = diagnostics[key]
+            if str(record["relative_ref"]) != str(entry["relative_ref"]) or str(record["sha256"]) != str(
+                entry["sha256"]
+            ):
+                raise ValueError("index binding mismatch")
+        except Exception as exc:
+            raise fatal("MVP_FREEZE_INVALID", "diagnostic index binding is invalid") from exc
 
 
 def verify_frozen_attempt(project_root: Path, attempt_id: str, *, inference_quiescent: bool) -> dict[str, Any]:
@@ -104,6 +207,7 @@ def verify_frozen_attempt(project_root: Path, attempt_id: str, *, inference_quie
         or len(video_order) != len(set(str(value) for value in video_order))
     ):
         raise fatal("MVP_FREEZE_INVALID", "InferencePlan video set is invalid")
+    _verify_window_diagnostics(inference_root=inference_root, entries=entries, video_order=video_order)
     prediction_entries = [entry for entry in entries if entry.get("artifact_type") == "prediction-freeze"]
     prediction_by_ref = {str(entry["relative_ref"]): entry for entry in prediction_entries}
     expected_prediction_refs = [f"freezes/prediction/{video_id}.json" for video_id in video_order]
@@ -328,22 +432,38 @@ def _publish_launch_plan(
         for entry in verified["output_manifest"]["entries"]
         if entry.get("artifact_type") == "predictions"
     )
-    allowed_inputs = tuple(
+    diagnostic_entries = tuple(
+        entry
+        for entry in verified["output_manifest"]["entries"]
+        if entry.get("artifact_type") == "diagnostic-window"
+    )
+    prediction_inputs = tuple(
         {
             "byte_length": int(entry["byte_length"]),
             "relative_ref": f"inference/{entry['relative_ref']}",
             "sha256": str(entry["sha256"]),
         }
         for entry in prediction_entries
-    ) + (dict(target_entry),)
+    )
+    diagnostic_inputs = tuple(
+        {
+            "byte_length": int(entry["byte_length"]),
+            "relative_ref": f"inference/{entry['relative_ref']}",
+            "sha256": str(entry["sha256"]),
+        }
+        for entry in diagnostic_entries
+    )
+    allowed_inputs = (*prediction_inputs, *diagnostic_inputs, dict(target_entry))
     plan = MvpEvaluatorLaunchPlan(
         attempt_id=attempt_id,
         evaluation_attempt_id=evaluation_attempt_id,
         inference_freeze_hash=str(verified["inference_freeze_hash"]),
         annotation_manifest_ref=str(target_entry["relative_ref"]),
-        readable_refs=tuple(str(entry["relative_ref"]) for entry in allowed_inputs[:-1]),
+        readable_refs=tuple(str(entry["relative_ref"]) for entry in prediction_inputs),
+        diagnostic_refs=tuple(str(entry["relative_ref"]) for entry in diagnostic_inputs),
         allowed_inputs=allowed_inputs,
         metrics_ref="metrics.json",
+        diagnostic_report_ref="diagnostic_report.json",
         receipt_ref="evaluation_receipt.json",
         runtime_profile=RUNTIME_PROFILE,
         research_claim_status=RESEARCH_CLAIM_STATUS,
@@ -436,6 +556,8 @@ def _run_outer_attempt(
         raise fatal("EVALUATOR_BOUNDARY_VIOLATION", "Evaluator changed inference or Memory facts")
     return {
         "attempt_id": attempt_id,
+        "diagnostic_report_hash": safe_result["diagnostic_report_hash"],
+        "diagnostic_report_ref": f"evaluation/{evaluation_attempt_id}/{safe_result['diagnostic_report_ref']}",
         "evaluator_process_exit_code": evaluator_exit,
         "evaluator_process_id": evaluator_process_id,
         "evaluator_started_after_inference_exit": True,

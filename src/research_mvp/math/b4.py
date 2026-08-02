@@ -42,6 +42,51 @@ class MvpB4State:
         return cls(0, 0.0, 0.0, state, False, 0.0, (), ())
 
 
+@dataclass(frozen=True, slots=True)
+class MvpB4Audit:
+    previous_version: int
+    previous_state: str
+    previous_fast: float
+    previous_slow: float
+    previous_scene_age_us: float
+    delta_us: int
+    boundary: float
+    effective_horizon_us: float
+    scene_age_us: float
+    scene_time_us: float
+    tau_fast_us: float
+    tau_slow_us: float
+    alpha_fast: float
+    alpha_slow: float
+    rho_fast: float
+    rho_slow: float
+    valid_observation: bool
+    input_evidence: float
+    input_reliability: float
+    input_direction: float
+    slow_prior: float
+    novelty: float
+    momentum_weight: float
+    fast: float
+    slow: float
+    momentum: float
+    z: float
+    input_uncertainty: float
+    clock_gap: float
+    gap_uncertainty: float
+    uncertainty: float
+    score_interval: tuple[float, float]
+    new_state: str
+    transition_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class MvpB4DetailedResult:
+    commit: MvpB4Commit
+    state: MvpB4State
+    audit: MvpB4Audit
+
+
 def _union(intervals: Iterable[MvpInterval]) -> tuple[MvpInterval, ...]:
     ordered = sorted(intervals, key=lambda item: (item.start_us, item.end_us))
     merged: list[MvpInterval] = []
@@ -99,7 +144,7 @@ def _next_state(previous: str, confident_abnormal: bool, confident_normal: bool,
     raise ValueError("invalid previous B4 state")
 
 
-def compute_b4(
+def compute_b4_detailed(
     video_id: str,
     window_id: str,
     window_ordinal: int,
@@ -109,7 +154,7 @@ def compute_b4(
     previous: MvpB4State,
     *,
     boundary: float = 0.0,
-) -> tuple[MvpB4Commit, MvpB4State]:
+) -> MvpB4DetailedResult:
     if isinstance(delta_us, bool) or not isinstance(delta_us, int) or delta_us <= 0 or delta_us > 2**63 - 1:
         raise ValueError("delta_us must be a positive int64")
     if previous.version != window_ordinal:
@@ -200,7 +245,67 @@ def compute_b4(
         previous_coverages=tuple(current_coverages),
         completed_scene_durations_us=previous.completed_scene_durations_us,
     )
-    return commit, next_state
+    audit = MvpB4Audit(
+        previous_version=previous.version,
+        previous_state=previous.state,
+        previous_fast=previous.fast,
+        previous_slow=previous.slow,
+        previous_scene_age_us=previous.scene_age_us,
+        delta_us=delta_us,
+        boundary=boundary,
+        effective_horizon_us=effective_horizon,
+        scene_age_us=scene_age,
+        scene_time_us=scene_time,
+        tau_fast_us=tau_fast,
+        tau_slow_us=tau_slow,
+        alpha_fast=alpha_fast,
+        alpha_slow=alpha_slow,
+        rho_fast=rho_fast,
+        rho_slow=rho_slow,
+        valid_observation=valid_observation,
+        input_evidence=evidence,
+        input_reliability=reliability,
+        input_direction=final_b6.direction_commit,
+        slow_prior=slow_prior,
+        novelty=novelty,
+        momentum_weight=momentum_weight,
+        fast=fast,
+        slow=slow,
+        momentum=momentum,
+        z=z,
+        input_uncertainty=uncertainty_commit,
+        clock_gap=gap,
+        gap_uncertainty=gap_uncertain,
+        uncertainty=uncertainty,
+        score_interval=(lower, upper),
+        new_state=state,
+        transition_reason=reason,
+    )
+    return MvpB4DetailedResult(commit, next_state, audit)
+
+
+def compute_b4(
+    video_id: str,
+    window_id: str,
+    window_ordinal: int,
+    delta_us: int,
+    final_b2: MvpB2Output,
+    final_b6: MvpB6Output,
+    previous: MvpB4State,
+    *,
+    boundary: float = 0.0,
+) -> tuple[MvpB4Commit, MvpB4State]:
+    result = compute_b4_detailed(
+        video_id,
+        window_id,
+        window_ordinal,
+        delta_us,
+        final_b2,
+        final_b6,
+        previous,
+        boundary=boundary,
+    )
+    return result.commit, result.state
 
 
 class B4Committer:
@@ -223,10 +328,31 @@ class B4Committer:
         *,
         boundary: float = 0.0,
     ) -> MvpB4Commit:
+        return self.commit_with_audit(
+            video_id,
+            window_id,
+            window_ordinal,
+            delta_us,
+            final_b2,
+            final_b6,
+            boundary=boundary,
+        ).commit
+
+    def commit_with_audit(
+        self,
+        video_id: str,
+        window_id: str,
+        window_ordinal: int,
+        delta_us: int,
+        final_b2: MvpB2Output,
+        final_b6: MvpB6Output,
+        *,
+        boundary: float = 0.0,
+    ) -> MvpB4DetailedResult:
         key = (video_id, window_id)
         if key in self._committed:
             raise ValueError("B4 must commit exactly once per window")
-        commit, state = compute_b4(
+        result = compute_b4_detailed(
             video_id,
             window_id,
             window_ordinal,
@@ -237,5 +363,5 @@ class B4Committer:
             boundary=boundary,
         )
         self._committed.add(key)
-        self._state = state
-        return commit
+        self._state = result.state
+        return result

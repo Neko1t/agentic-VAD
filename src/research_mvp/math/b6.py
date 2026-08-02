@@ -30,6 +30,43 @@ class MvpMemoryMass:
     weights: tuple[float, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MvpB6Audit:
+    mode: str
+    memory_enabled: bool
+    local_evidence: float
+    local_reliability: float
+    local_direction: float
+    local_uncertainty: float
+    source_case_ids: tuple[str, ...]
+    memory_positive: float
+    memory_negative: float
+    memory_quality: float
+    memory_direction: float
+    memory_conflict: float
+    memory_evidence: float
+    memory_reliability: float
+    memory_uncertainty: float
+    memory_weights: tuple[float, ...]
+    memory_gate: float
+    candidate_evidence: float
+    candidate_reliability: float
+    candidate_direction: float
+    candidate_uncertainty: float
+    abstained: bool
+    output_evidence: float
+    output_reliability: float
+    output_direction: float
+    output_uncertainty: float
+    output_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class MvpB6DetailedResult:
+    output: MvpB6Output
+    audit: MvpB6Audit
+
+
 def _local(local: MvpB2Output) -> tuple[float, float, float, float]:
     reliability = require_unit(multiply(local.quality, subtract(1.0, local.conflict)), "local reliability")
     direction = require_signed_unit(local.direction, "local direction")
@@ -92,12 +129,102 @@ def fuse_b6(
     memory_enabled: bool,
     empty_status: str = "EMPTY_IDENTITY",
 ) -> MvpB6Output:
+    return fuse_b6_detailed(
+        local,
+        ordered_cases,
+        memory_enabled=memory_enabled,
+        empty_status=empty_status,
+    ).output
+
+
+def _audit(
+    *,
+    mode: str,
+    memory_enabled: bool,
+    local_values: tuple[float, float, float, float],
+    cases: tuple[MvpAdvisoryPayload, ...],
+    mass: MvpMemoryMass,
+    gate: float,
+    candidate: tuple[float, float, float, float],
+    abstained: bool,
+    output: MvpB6Output,
+) -> MvpB6Audit:
+    local_reliability, local_direction, local_evidence, local_uncertainty = local_values
+    candidate_evidence, candidate_reliability, candidate_direction, candidate_uncertainty = candidate
+    return MvpB6Audit(
+        mode=mode,
+        memory_enabled=memory_enabled,
+        local_evidence=local_evidence,
+        local_reliability=local_reliability,
+        local_direction=local_direction,
+        local_uncertainty=local_uncertainty,
+        source_case_ids=tuple(case.case_id for case in cases),
+        memory_positive=mass.positive,
+        memory_negative=mass.negative,
+        memory_quality=mass.quality,
+        memory_direction=mass.direction,
+        memory_conflict=mass.conflict,
+        memory_evidence=mass.evidence,
+        memory_reliability=mass.reliability,
+        memory_uncertainty=mass.uncertainty,
+        memory_weights=mass.weights,
+        memory_gate=gate,
+        candidate_evidence=candidate_evidence,
+        candidate_reliability=candidate_reliability,
+        candidate_direction=candidate_direction,
+        candidate_uncertainty=candidate_uncertainty,
+        abstained=abstained,
+        output_evidence=output.e_commit,
+        output_reliability=output.reliability_commit,
+        output_direction=output.direction_commit,
+        output_uncertainty=output.u_commit,
+        output_status=output.memory_status,
+    )
+
+
+def fuse_b6_detailed(
+    local: MvpB2Output,
+    ordered_cases: Iterable[MvpAdvisoryPayload],
+    *,
+    memory_enabled: bool,
+    empty_status: str = "EMPTY_IDENTITY",
+) -> MvpB6DetailedResult:
     cases = tuple(ordered_cases)
+    local_values = _local(local)
+    zero_mass = MvpMemoryMass(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, ())
     if not memory_enabled:
-        return identity_b6(local, "DISABLED_IDENTITY")
+        output = identity_b6(local, "DISABLED_IDENTITY")
+        return MvpB6DetailedResult(
+            output,
+            _audit(
+                mode="IDENTITY_DISABLED",
+                memory_enabled=False,
+                local_values=local_values,
+                cases=(),
+                mass=zero_mass,
+                gate=0.0,
+                candidate=(output.e_commit, output.reliability_commit, output.direction_commit, output.u_commit),
+                abstained=False,
+                output=output,
+            ),
+        )
     if not cases:
-        return identity_b6(local, empty_status)
-    local_reliability, _local_direction, local_evidence, local_uncertainty = _local(local)
+        output = identity_b6(local, empty_status)
+        return MvpB6DetailedResult(
+            output,
+            _audit(
+                mode="IDENTITY_EMPTY",
+                memory_enabled=True,
+                local_values=local_values,
+                cases=(),
+                mass=zero_mass,
+                gate=0.0,
+                candidate=(output.e_commit, output.reliability_commit, output.direction_commit, output.u_commit),
+                abstained=False,
+                output=output,
+            ),
+        )
+    local_reliability, _local_direction, local_evidence, local_uncertainty = local_values
     mass = memory_mass(cases)
     gate = require_unit(multiply(local_uncertainty, mass.reliability), "memory gate")
     evidence_hat = add(
@@ -113,17 +240,47 @@ def fuse_b6(
     if abs(evidence_hat) > reliability_hat + 1e-12:
         raise ValueError("fused evidence exceeds fused reliability")
     direction_hat = divide(evidence_hat, reliability_hat) if reliability_hat > 0.0 else 0.0
+    direction_hat = require_signed_unit(direction_hat, "fused direction")
     uncertainty_hat = require_unit(subtract(1.0, abs(evidence_hat)), "fused uncertainty")
     internal_disagreement = strict_greater(mass.positive, 0.0) and strict_greater(mass.negative, 0.0)
     local_disagreement = compare(multiply(local_evidence, mass.evidence), 0.0) == -1
     uncertainty_not_improved = compare(uncertainty_hat, local_uncertainty) >= 0
+    candidate = (evidence_hat, reliability_hat, direction_hat, uncertainty_hat)
     if strict_greater(mass.quality, 0.0) and (internal_disagreement or local_disagreement) and uncertainty_not_improved:
-        return identity_b6(local, "ABSTAIN_UNRESOLVED_CONFLICT")
-    return MvpB6Output(
+        output = identity_b6(local, "ABSTAIN_UNRESOLVED_CONFLICT")
+        return MvpB6DetailedResult(
+            output,
+            _audit(
+                mode="ABSTAIN",
+                memory_enabled=True,
+                local_values=local_values,
+                cases=cases,
+                mass=mass,
+                gate=gate,
+                candidate=candidate,
+                abstained=True,
+                output=output,
+            ),
+        )
+    output = MvpB6Output(
         e_commit=evidence_hat,
         reliability_commit=reliability_hat,
-        direction_commit=require_signed_unit(direction_hat, "fused direction"),
+        direction_commit=direction_hat,
         u_commit=uncertainty_hat,
         memory_status="FUSED",
         source_case_ids=tuple(case.case_id for case in cases),
+    )
+    return MvpB6DetailedResult(
+        output,
+        _audit(
+            mode="FUSION",
+            memory_enabled=True,
+            local_values=local_values,
+            cases=cases,
+            mass=mass,
+            gate=gate,
+            candidate=candidate,
+            abstained=False,
+            output=output,
+        ),
     )

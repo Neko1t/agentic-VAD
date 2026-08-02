@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..codec import dumps, loads
+from .diagnostics import build_evaluator_diagnostic_report
 from .metrics import FRAME_TARGET_MANIFEST_TYPE, evaluate_binary_metrics, evaluate_frame_predictions
 from .publisher import MvpEvaluatorPublisher
 from .resolver import MvpEvaluatorResolver
@@ -35,6 +36,12 @@ def evaluate_launch_plan(launch_plan_path: Path) -> dict[str, Any]:
     resolver = MvpEvaluatorResolver(attempt_root, allowed)
     prediction_refs = tuple(str(value) for value in plan["readable_refs"])
     predictions = tuple(record for ref in prediction_refs for record in _jsonl(resolver.read(ref)))
+    diagnostics: list[dict[str, Any]] = []
+    for ref in plan["diagnostic_refs"]:
+        value = loads(resolver.read(str(ref)))
+        if not isinstance(value, dict):
+            raise ValueError("Evaluator diagnostic record is invalid")
+        diagnostics.append(value)
     target_manifest = loads(resolver.read(str(plan["annotation_manifest_ref"])))
     if not isinstance(target_manifest, dict):
         raise ValueError("Evaluator target manifest is invalid")
@@ -64,18 +71,38 @@ def evaluate_launch_plan(launch_plan_path: Path) -> dict[str, Any]:
     publisher = MvpEvaluatorPublisher(
         launch_plan_path.parent,
         str(plan["metrics_ref"]),
+        str(plan["diagnostic_report_ref"]),
         str(plan["receipt_ref"]),
+    )
+    diagnostic_report = build_evaluator_diagnostic_report(
+        ordered_predictions,
+        tuple(diagnostics),
+        target_manifest,
+    )
+    diagnostic_receipt = publisher.publish_diagnostic_report(
+        dumps(diagnostic_report),
+        parent_payload_hashes=(
+            str(plan["inference_freeze_hash"]),
+            *(str(item["sha256"]) for item in plan["allowed_inputs"]),
+        ),
     )
     metrics_receipt = publisher.publish_metrics(dumps(metrics))
     receipt_payload = {
+        "diagnostic_report_hash": diagnostic_receipt.file_hash,
+        "diagnostic_report_ref": diagnostic_receipt.relative_ref,
         "metrics_hash": metrics_receipt.file_hash,
         "metrics_ref": metrics_receipt.relative_ref,
         "research_claim_status": str(plan["research_claim_status"]),
         "runtime_profile": str(plan["runtime_profile"]),
         "status_code": "EVALUATION_COMPLETED",
     }
-    receipt = publisher.publish_receipt(dumps(receipt_payload))
+    receipt = publisher.publish_receipt(
+        dumps(receipt_payload),
+        parent_payload_hashes=(diagnostic_receipt.file_hash, metrics_receipt.file_hash),
+    )
     return {
+        "diagnostic_report_hash": diagnostic_receipt.file_hash,
+        "diagnostic_report_ref": diagnostic_receipt.relative_ref,
         "metrics_hash": metrics_receipt.file_hash,
         "metrics_ref": metrics_receipt.relative_ref,
         "receipt_hash": receipt.file_hash,
