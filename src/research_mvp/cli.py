@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from .adapters.real_assets import MvpRealModelConfig, inspect_real_assets, precompute_asset_bundle
+from .adapters.semantic_scores import TransformersSemanticScoringBackend, precompute_semantic_scores
 from .failures import MvpFailure
 from .launcher import compare_frozen_attempts
 from .media import (
@@ -55,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
     _add_real_asset_arguments(precompute_parser)
     precompute_parser.add_argument("--bundle-id", required=True)
     precompute_parser.add_argument("--bundle-root")
+    semantic_parser = subparsers.add_parser("precompute-semantic-scores")
+    semantic_parser.add_argument("--input-manifest", required=True)
+    semantic_parser.add_argument("--output-root", required=True)
+    semantic_parser.add_argument("--model-path", required=True)
+    semantic_parser.add_argument("--gpu-device", required=True)
+    semantic_parser.add_argument("--batch-size", type=int, choices=(32,), default=32)
     media_parser = subparsers.add_parser("prepare-real-media")
     media_parser.add_argument("--video-dir", required=True)
     media_parser.add_argument("--asset-root", required=True)
@@ -111,6 +118,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
             return 0 if result["status_code"] == "ASSET_READY" else 3
+        elif args.command == "precompute-semantic-scores":
+            receipt = precompute_semantic_scores(
+                input_manifest_path=Path(args.input_manifest),
+                output_root=Path(args.output_root),
+                backend=TransformersSemanticScoringBackend(
+                    Path(args.model_path),
+                    str(args.gpu_device),
+                    batch_size=int(args.batch_size),
+                ),
+            )
+            result = {
+                "manifest_path": str(receipt.manifest_path.resolve()),
+                "manifest_sha256": receipt.manifest_sha256,
+                "score_count": receipt.score_count,
+                "status_code": receipt.status_code,
+            }
         else:
             bundle_root = (
                 Path(args.bundle_root)

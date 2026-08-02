@@ -248,3 +248,26 @@ def test_same_frozen_inputs_are_deterministic() -> None:
         adapter=adapter,
     )
     assert run_b3_lite(**kwargs) == run_b3_lite(**kwargs)
+
+
+def test_empty_action_order_disables_optional_tools_without_unavailable_attempts() -> None:
+    adapter = PrecomputedEvidenceAdapter()
+    base = accepted(adapter, "VLM")
+    artifacts = {action: (raw := artifact(action), payload_hash(raw)) for action in ("OCR", "AUDIO")}
+
+    result = run_b3_lite(
+        video_id="video",
+        window_id="window",
+        window_ordinal=0,
+        window=WINDOW,
+        base_results=(base,),
+        action_artifacts=artifacts,
+        adapter=adapter,
+        action_order=(),
+    )
+
+    assert result.attempted_actions == ()
+    assert result.accepted_actions == ()
+    assert result.tool_trace == ()
+    assert result.stop_reason == "TOOL_POLICY_DISABLED"
+    assert tuple(output.slot for output in result.b2_outputs) == ("B2:base", "B2:final")

@@ -63,6 +63,8 @@ def _raw_evidence(
     window: Mapping[str, Any],
     base_result: MvpAdapterResult,
     b3: MvpB3LiteResult,
+    *,
+    base_evidence_is_derived: bool,
 ) -> tuple[dict[str, Any], ...]:
     artifact_refs = window.get("evidence_artifacts")
     refs = artifact_refs if isinstance(artifact_refs, Mapping) else {}
@@ -77,7 +79,9 @@ def _raw_evidence(
                 "accepted": base_result.accepted if action == "VLM" else bool(trace and trace.accepted),
                 "action": action,
                 "payload_hash": base_result.raw_payload_hash if action == "VLM" else None if trace is None else trace.raw_payload_hash,
-                "relative_ref": None if not ref_mapping else str(ref_mapping.get("relative_ref")),
+                "relative_ref": None
+                if (action == "VLM" and base_evidence_is_derived) or not ref_mapping
+                else str(ref_mapping.get("relative_ref")),
             }
         )
     return tuple(records)
@@ -95,8 +99,14 @@ def build_window_diagnostic(
     window_artifact: MvpWindowArtifact,
     window_receipt: MvpPublishReceipt,
     prediction_payload_hash: str,
+    base_evidence_is_derived: bool = False,
 ) -> dict[str, Any]:
-    raw_evidence = _raw_evidence(window, base_result, b3)
+    raw_evidence = _raw_evidence(
+        window,
+        base_result,
+        b3,
+        base_evidence_is_derived=base_evidence_is_derived,
+    )
     base_b2 = b3.b2_outputs[0]
     diagnostic = {
         "b2": {

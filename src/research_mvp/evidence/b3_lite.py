@@ -251,8 +251,17 @@ def run_b3_lite(
     action_artifacts: Mapping[str, tuple[Mapping[str, Any] | None, str | None]],
     adapter: PrecomputedEvidenceAdapter,
     required_actions: tuple[str, ...] = (),
+    action_order: tuple[str, ...] = ACTION_ORDER,
 ) -> MvpB3LiteResult:
-    if len(required_actions) != len(set(required_actions)) or any(action not in ACTION_ORDER for action in required_actions):
+    if (
+        len(action_order) != len(set(action_order))
+        or tuple(action for action in ACTION_ORDER if action in action_order) != action_order
+    ):
+        raise ValueError("action order must be an ordered unique subset of the frozen registry")
+    if (
+        len(required_actions) != len(set(required_actions))
+        or any(action not in action_order for action in required_actions)
+    ):
         raise ValueError("required actions must be a unique subset of the frozen registry")
     observations = tuple(result.observation for result in base_results if result.accepted and result.observation is not None)
     assessments = tuple(result.assessment for result in base_results if result.accepted and result.assessment is not None)
@@ -265,9 +274,9 @@ def run_b3_lite(
     accepted: list[str] = []
     eligibility_audits: list[MvpB3EligibilityAudit] = []
     traces: list[MvpToolTrace] = []
-    stop_reason = "GAPS_CLOSED"
+    stop_reason = "TOOL_POLICY_DISABLED" if not action_order else "GAPS_CLOSED"
 
-    while len(attempted) < MAX_ACTIONS:
+    while len(attempted) < min(MAX_ACTIONS, len(action_order)):
         current_b2 = outputs[-1]
         evaluated = tuple(
             _eligibility_audit(
@@ -278,7 +287,7 @@ def run_b3_lite(
                 current_b2=current_b2,
                 window=window,
             )
-            for action in ACTION_ORDER
+            for action in action_order
             if action not in attempted
         )
         eligible = tuple(audit for audit in evaluated if audit.reasons)
@@ -346,7 +355,8 @@ def run_b3_lite(
         )
         outputs.append(step_b2)
     else:
-        stop_reason = "BUDGET_EXHAUSTED"
+        if action_order:
+            stop_reason = "BUDGET_EXHAUSTED"
 
     final_b2 = _build(video_id, window_id, window_ordinal, window, observations, assessments, "B2:final")
     outputs.append(final_b2)

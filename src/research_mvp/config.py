@@ -11,6 +11,7 @@ from .ids import validate_attempt_id
 
 REFERENCE_PROFILE = "RESEARCH_MVP"
 RESEARCH_CLAIM_STATUS = "NO_RESEARCH_CLAIM"
+TOOL_POLICIES = {"ALL": ("OCR", "AUDIO"), "NONE": ()}
 _POISON_TERMS = ("label", "annotation", "ground_truth", "ground truth", "metric_target", "metric target")
 
 
@@ -53,6 +54,7 @@ class MvpInferenceConfig:
     rrf_constant: int = 60
     optional_pass_1: bool = False
     resume: bool = False
+    tool_policy: str = "ALL"
 
     def __post_init__(self) -> None:
         validate_attempt_id(self.attempt_id)
@@ -66,10 +68,18 @@ class MvpInferenceConfig:
             raise ValueError("reference MVP numeric profile is frozen")
         if self.optional_pass_1 or self.resume:
             raise ValueError("reference MVP forbids optional pass 1 and resume")
+        if self.tool_policy not in TOOL_POLICIES:
+            raise ValueError("tool_policy is outside the frozen MVP registry")
         validate_inference_boundary(self)
 
     @classmethod
-    def reference(cls, attempt_id: str, project_root: Path | None = None) -> "MvpInferenceConfig":
+    def reference(
+        cls,
+        attempt_id: str,
+        project_root: Path | None = None,
+        *,
+        tool_policy: str = "ALL",
+    ) -> "MvpInferenceConfig":
         attempt_id = validate_attempt_id(attempt_id)
         base = project_root if project_root is not None else Path(".")
         return cls(
@@ -77,7 +87,12 @@ class MvpInferenceConfig:
             memory_namespace_id=attempt_id,
             output_root=base / "data" / "agentic_outputs" / "mvp" / attempt_id,
             memory_root=base / "data" / "agentic_memory" / "mvp" / attempt_id,
+            tool_policy=tool_policy,
         )
+
+    @property
+    def tool_action_order(self) -> tuple[str, ...]:
+        return TOOL_POLICIES[self.tool_policy]
 
     @property
     def research_claim_status(self) -> str:

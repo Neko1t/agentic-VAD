@@ -132,6 +132,9 @@ def run_window(
     session_payloads: Mapping[str, Mapping[str, Any]] | None = None,
     memory_status_override: str | None = None,
     evidence_loader: Callable[[str], Mapping[str, Any]] | None = None,
+    semantic_evidence_mapper: Callable[[str, Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    semantic_score_manifest_sha256: str | None = None,
+    tool_action_order: tuple[str, ...] = ("OCR", "AUDIO"),
 ) -> MvpWindowRun:
     ordinal = window["ordinal"]
     if isinstance(ordinal, bool) or not isinstance(ordinal, int):
@@ -149,7 +152,12 @@ def run_window(
         if not isinstance(artifact_refs, Mapping):
             raise ValueError("precomputed evidence registry is missing")
         raw_base = evidence_loader("VLM")
-        base_hash = str(artifact_refs["VLM"]["payload_hash"])
+        source_base_hash = str(artifact_refs["VLM"]["payload_hash"])
+        if semantic_evidence_mapper is not None:
+            raw_base = semantic_evidence_mapper(video_id, window, raw_base)
+        base_hash = source_base_hash
+        if semantic_evidence_mapper is not None:
+            base_hash = payload_hash(dict(raw_base))
         action_artifacts = _LazyActionArtifacts(evidence_loader, artifact_refs)
     base = adapter.accept("VLM", raw_base, base_hash)
     b3 = run_b3_lite(
@@ -160,6 +168,7 @@ def run_window(
         base_results=(base,),
         action_artifacts=action_artifacts,
         adapter=adapter,
+        action_order=tool_action_order,
     )
     final_b2 = b3.final_b2
     causal_chain = ["B2_FINAL"]
@@ -272,16 +281,29 @@ def run_window(
         window_artifact=artifact,
         window_receipt=artifact_receipt,
         prediction_payload_hash=prediction_hash,
+        base_evidence_is_derived=semantic_evidence_mapper is not None,
     )
     diagnostic_bytes = dumps(diagnostic)
-    diagnostic_parents = (
-        artifact_receipt.file_hash,
-        *(
+    if semantic_evidence_mapper is None:
+        diagnostic_evidence_parents = tuple(
             str(item["payload_hash"])
             for item in diagnostic["evidence_artifacts"]
             if item["payload_hash"] is not None
-        ),
-    )
+        )
+    else:
+        if semantic_score_manifest_sha256 is None:
+            raise ValueError("derived semantic evidence requires its manifest hash")
+        diagnostic_evidence_parents = (
+            base.raw_payload_hash,
+            source_base_hash,
+            semantic_score_manifest_sha256,
+            *(
+                str(item["payload_hash"])
+                for item in diagnostic["evidence_artifacts"]
+                if item["action"] != "VLM" and item["payload_hash"] is not None
+            ),
+        )
+    diagnostic_parents = (artifact_receipt.file_hash, *diagnostic_evidence_parents)
     diagnostic_receipt = publisher.publish(
         f"diagnostic-window:{video_id}:{window['window_id']}",
         diagnostic_bytes,

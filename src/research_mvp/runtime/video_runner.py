@@ -10,6 +10,11 @@ from typing import Any, Mapping
 
 from .. import RESEARCH_CLAIM_STATUS, RUNTIME_PROFILE
 from ..adapters.real_assets import MvpPrecomputedEvidenceResolver, load_precomputed_input
+from ..adapters.semantic_scores import (
+    MAPPING_IDENTITY,
+    MvpSemanticScoreResolver,
+    load_semantic_score_manifest,
+)
 from ..artifacts.hashes import bytes_sha256, file_sha256
 from ..artifacts.publisher import MvpImmutablePublisher
 from ..artifacts.resolver import validate_path_identity
@@ -144,6 +149,7 @@ def _inference_plan(
     fixture_path: Path,
     fixture: Mapping[str, Any],
     repo_root: Path,
+    semantic_score_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     installed_files = _installed_package_file_hashes()
     raw_outputs = _raw_output_manifest(fixture)
@@ -177,7 +183,8 @@ def _inference_plan(
         "runtime_profile": config.runtime_profile,
         "raw_output_artifacts": raw_outputs,
         "source_file_manifest": _source_manifest(repo_root),
-        "tool_action_order": ["OCR", "AUDIO"],
+        "tool_action_order": list(config.tool_action_order),
+        "tool_policy": config.tool_policy,
         "video_order": [str(video["video_id"]) for video in fixture["videos"]],
         "video_workers": config.video_workers,
         "window_workers": config.window_workers,
@@ -199,6 +206,14 @@ def _inference_plan(
         plan["frame_interval"] = int(fixture["decision_stride_frames"])
         plan["frame_rate"] = dict(fixture["frame_rate"])
         plan["temporal_protocol"] = str(fixture["temporal_protocol"])
+    if semantic_score_manifest_sha256 is None:
+        plan["base_evidence_mapper_identity"] = str(
+            plan.get("precompute_provenance", {}).get("smoke_mapper_identity", "SYNTHETIC_BASE_EVIDENCE_V0")
+        )
+    else:
+        plan["base_evidence_mapper_identity"] = MAPPING_IDENTITY
+        plan["semantic_mapping_identity"] = MAPPING_IDENTITY
+        plan["semantic_score_manifest_sha256"] = semantic_score_manifest_sha256
     return plan
 
 
@@ -323,9 +338,23 @@ def run_precomputed_inference(
     project_root: Path,
     input_manifest_path: Path,
     memory_enabled: bool,
+    tool_policy: str = "ALL",
+    semantic_score_manifest_path: Path | None = None,
+    semantic_score_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     validate_inference_environment()
     fixture, _bundle, evidence_resolver = load_precomputed_input(input_manifest_path)
+    if (semantic_score_manifest_path is None) != (semantic_score_manifest_sha256 is None):
+        raise fatal("MVP_FREEZE_INVALID", "semantic score path and hash must be supplied together")
+    semantic_score_resolver = (
+        None
+        if semantic_score_manifest_path is None
+        else load_semantic_score_manifest(
+            semantic_score_manifest_path,
+            expected_sha256=str(semantic_score_manifest_sha256),
+            input_manifest_path=input_manifest_path,
+        )
+    )
     validate_inference_boundary(fixture)
     return _run_inference(
         attempt_id=attempt_id,
@@ -334,6 +363,9 @@ def run_precomputed_inference(
         fixture=fixture,
         memory_enabled=memory_enabled,
         evidence_resolver=evidence_resolver,
+        tool_policy=tool_policy,
+        semantic_score_resolver=semantic_score_resolver,
+        semantic_score_manifest_sha256=semantic_score_manifest_sha256,
     )
 
 
@@ -347,9 +379,12 @@ def _run_inference(
     memory_fault_video_id: str | None = None,
     memory_read_fault_at: tuple[str, int] | None = None,
     evidence_resolver: MvpPrecomputedEvidenceResolver | None = None,
+    tool_policy: str = "ALL",
+    semantic_score_resolver: MvpSemanticScoreResolver | None = None,
+    semantic_score_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[3]
-    config = MvpInferenceConfig.reference(attempt_id, project_root)
+    config = MvpInferenceConfig.reference(attempt_id, project_root, tool_policy=tool_policy)
     output_attempt_root = config.output_root
     validate_path_identity(output_attempt_root)
     validate_path_identity(config.memory_root)
@@ -358,7 +393,13 @@ def _run_inference(
     writer = MvpMemoryWriter.create_fresh(config.memory_root, config.memory_namespace_id)
     last_verified_snapshot = read_snapshot(config.memory_root)
     publisher = MvpImmutablePublisher(output_attempt_root / "inference", _planned_targets(fixture))
-    plan = _inference_plan(config, input_manifest_path, fixture, repo_root)
+    plan = _inference_plan(
+        config,
+        input_manifest_path,
+        fixture,
+        repo_root,
+        semantic_score_manifest_sha256=semantic_score_manifest_sha256,
+    )
     plan_parent_list = [
         str(plan["fixture_sha256"]),
         str(plan["python_executable_sha256"]),
@@ -373,6 +414,8 @@ def _run_inference(
         plan_parent_list.extend(str(item["sha256"]) for item in provenance["model_files"])
         plan_parent_list.extend(str(item["sha256"]) for item in provenance["source_assets"])
         plan_parent_list.append(str(provenance["model_identity_payload_hash"]))
+    if semantic_score_manifest_sha256 is not None:
+        plan_parent_list.append(semantic_score_manifest_sha256)
     plan_parents = tuple(plan_parent_list)
     plan_semantic = {key: value for key, value in plan.items() if key not in {"attempt_id", "memory_namespace_id"}}
     publisher.publish(
@@ -424,6 +467,11 @@ def _run_inference(
                 else lambda action, _video_id=video_id, _window=window: evidence_resolver.load(
                     _video_id, _window, action
                 ),
+                semantic_evidence_mapper=None
+                if semantic_score_resolver is None
+                else semantic_score_resolver.map_evidence,
+                semantic_score_manifest_sha256=semantic_score_manifest_sha256,
+                tool_action_order=config.tool_action_order,
             )
             window_runs.append(run)
             all_window_runs.append(run)
@@ -603,6 +651,8 @@ def _run_inference(
         "research_claim_status": RESEARCH_CLAIM_STATUS,
         "retrieval_orders": [list(run.retrieval_order) for run in all_window_runs],
         "runtime_profile": RUNTIME_PROFILE,
+        "semantic_mapping_identity": plan["base_evidence_mapper_identity"],
+        "tool_policy": config.tool_policy,
         "video_order": [str(video["video_id"]) for video in fixture["videos"]],
         "videos": video_summaries,
         "window_traces": window_trace_records,

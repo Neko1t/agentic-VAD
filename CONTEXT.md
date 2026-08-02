@@ -55,3 +55,11 @@ _Avoid_: Evaluation trace, reasoning transcript
 **Evaluator Diagnostic Report**:
 A post-freeze report that joins inference diagnostics with evaluator targets to compare stage behavior against formal outcomes.
 _Avoid_: Inference diagnostic, training signal
+
+**Tool Policy**:
+The frozen experiment setting that determines which optional evidence tools are available to B3 while leaving the verified input bundle unchanged.
+_Avoid_: Missing tools, unavailable artifacts
+
+**Semantic Score Manifest**:
+A complete, immutable, label-free mapping from every frozen caption window to its LLM anomaly score and scoring provenance.
+_Avoid_: Refined scores, evaluator scores, runtime LLM output

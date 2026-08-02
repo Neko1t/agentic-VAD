@@ -482,6 +482,9 @@ def _run_outer_attempt(
     input_kind: str,
     memory_enabled: bool,
     target_manifest_path: Path | None,
+    tool_policy: str = "ALL",
+    semantic_score_manifest_path: Path | None = None,
+    semantic_score_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     validate_inference_environment()
     validate_attempt_id(attempt_id)
@@ -500,7 +503,20 @@ def _run_outer_attempt(
         str(input_manifest_path.resolve()),
         "--memory-enabled",
         "1" if memory_enabled else "0",
+        "--tool-policy",
+        tool_policy,
     ]
+    if semantic_score_manifest_path is not None or semantic_score_manifest_sha256 is not None:
+        if semantic_score_manifest_path is None or semantic_score_manifest_sha256 is None:
+            raise fatal("MVP_FREEZE_INVALID", "semantic score path and hash must be supplied together")
+        worker_command.extend(
+            [
+                "--semantic-score-manifest",
+                str(semantic_score_manifest_path.resolve()),
+                "--semantic-score-manifest-sha256",
+                semantic_score_manifest_sha256,
+            ]
+        )
     inference_process = subprocess.Popen(
         worker_command,
         cwd=_repo_root(),
@@ -518,6 +534,12 @@ def _run_outer_attempt(
             "asset_bundle_manifest_sha256"
         ):
             raise fatal("MVP_FREEZE_INVALID", "inference plan does not bind the verified asset bundle")
+    if verified["plan"].get("tool_policy") != tool_policy:
+        raise fatal("MVP_FREEZE_INVALID", "inference plan does not bind the requested tool policy")
+    if semantic_score_manifest_sha256 is not None and verified["plan"].get(
+        "semantic_score_manifest_sha256"
+    ) != semantic_score_manifest_sha256:
+        raise fatal("MVP_FREEZE_INVALID", "inference plan does not bind the semantic score manifest")
     before_hashes = dict(verified["hash_inventory"])
     evaluation_attempt_id = f"{attempt_id}-evaluation"
     if target_manifest_path is None:
@@ -598,6 +620,9 @@ def run_asset_attempt(
     input_manifest_path: Path,
     target_manifest_path: Path,
     memory_enabled: bool,
+    tool_policy: str = "ALL",
+    semantic_score_manifest_path: Path | None = None,
+    semantic_score_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     return _run_outer_attempt(
         attempt_id=attempt_id,
@@ -606,6 +631,9 @@ def run_asset_attempt(
         input_kind="precomputed",
         memory_enabled=memory_enabled,
         target_manifest_path=target_manifest_path,
+        tool_policy=tool_policy,
+        semantic_score_manifest_path=semantic_score_manifest_path,
+        semantic_score_manifest_sha256=semantic_score_manifest_sha256,
     )
 
 
@@ -685,6 +713,11 @@ def _inference_worker(args: argparse.Namespace) -> int:
                 project_root=Path(args.project_root),
                 input_manifest_path=Path(args.input_manifest),
                 memory_enabled=args.memory_enabled == "1",
+                tool_policy=args.tool_policy,
+                semantic_score_manifest_path=None
+                if args.semantic_score_manifest is None
+                else Path(args.semantic_score_manifest),
+                semantic_score_manifest_sha256=args.semantic_score_manifest_sha256,
             )
     except Exception:
         return 2
@@ -703,12 +736,18 @@ def main(argv: list[str] | None = None) -> int:
     asset_parser.add_argument("--input-manifest", required=True)
     asset_parser.add_argument("--target-manifest", required=True)
     asset_parser.add_argument("--memory-enabled", choices=("0", "1"), default="1")
+    asset_parser.add_argument("--tool-policy", choices=("ALL", "NONE"), default="ALL")
+    asset_parser.add_argument("--semantic-score-manifest")
+    asset_parser.add_argument("--semantic-score-manifest-sha256")
     worker_parser = subparsers.add_parser("_inference-worker")
     worker_parser.add_argument("--attempt-id", required=True)
     worker_parser.add_argument("--project-root", required=True)
     worker_parser.add_argument("--input-kind", choices=("synthetic", "precomputed"), required=True)
     worker_parser.add_argument("--input-manifest", required=True)
     worker_parser.add_argument("--memory-enabled", choices=("0", "1"), required=True)
+    worker_parser.add_argument("--tool-policy", choices=("ALL", "NONE"), required=True)
+    worker_parser.add_argument("--semantic-score-manifest")
+    worker_parser.add_argument("--semantic-score-manifest-sha256")
     args = parser.parse_args(argv)
     if args.command == "_inference-worker":
         return _inference_worker(args)
@@ -729,6 +768,11 @@ def main(argv: list[str] | None = None) -> int:
                 input_manifest_path=Path(args.input_manifest),
                 target_manifest_path=Path(args.target_manifest),
                 memory_enabled=args.memory_enabled == "1",
+                tool_policy=args.tool_policy,
+                semantic_score_manifest_path=None
+                if args.semantic_score_manifest is None
+                else Path(args.semantic_score_manifest),
+                semantic_score_manifest_sha256=args.semantic_score_manifest_sha256,
             )
     except MvpFailure as exc:
         print(json.dumps({"failure_code": exc.code, "severity": exc.severity}, separators=(",", ":")))

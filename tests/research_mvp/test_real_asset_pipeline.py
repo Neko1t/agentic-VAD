@@ -16,7 +16,17 @@ from src.research_mvp.adapters.real_assets import (
     precompute_asset_bundle,
     smoke_evidence_direction,
 )
+from src.research_mvp.adapters.semantic_scores import (
+    MAPPING_IDENTITY,
+    ORIGINAL_CONTEXT_PROMPT,
+    ORIGINAL_FORMAT_PROMPT,
+    load_semantic_score_manifest,
+    precompute_semantic_scores,
+    semantic_score_to_evidence,
+)
 from src.research_mvp.cli import main as cli_main
+from src.research_mvp.artifacts.hashes import file_sha256
+from src.research_mvp.codec import dumps
 from src.research_mvp.failures import MvpFailure
 from src.research_mvp.evaluator.metrics import DIRECT_B4_POSTPROCESS
 from src.research_mvp.launcher import run_asset_attempt, verify_frozen_attempt
@@ -62,6 +72,22 @@ class FakeRealBackends:
         self.embedding_inputs.append(text)
         vector = [1.0, 0.0] if "reference" in str(window["video_id"]) else [0.0, 1.0]
         return {"backend_name": "fake-embedding", "fallback_used": False, "vector": vector}
+
+    def close(self) -> None:
+        return None
+
+
+class FakeSemanticScoringBackend:
+    identity = "FAKE_TRANSFORMERS_LLM_SCORER_V1"
+    provenance = {
+        "model_id": "fake-llama-3.1-8b-instruct",
+        "model_files": [],
+        "torch_version": "test",
+        "transformers_version": "test",
+    }
+
+    def score(self, captions: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple("[0.1]" if "quiet" in caption else "[0.9]" for caption in captions)
 
     def close(self) -> None:
         return None
@@ -374,6 +400,204 @@ def test_smoke_evidence_mapper_is_deterministic_bounded_and_conflict_abstains() 
     assert smoke_evidence_direction("people fight near a fire alarm") == smoke_evidence_direction(
         "people fight near a fire alarm"
     )
+
+
+@pytest.mark.parametrize(
+    ("score", "expected_direction", "expected_quality", "expected_atom_count"),
+    [
+        (0.0, -1.0, 1.0, 1),
+        (0.1, -1.0, 0.8, 1),
+        (0.5, 0.0, 0.0, 0),
+        (0.9, 1.0, 0.8, 1),
+        (1.0, 1.0, 1.0, 1),
+    ],
+)
+def test_semantic_score_mapping_is_centered_continuous_b2_evidence(
+    tmp_path: Path,
+    score: float,
+    expected_direction: float,
+    expected_quality: float,
+    expected_atom_count: int,
+) -> None:
+    receipt, _backends, _targets = _bundle(tmp_path)
+    prepared, _bundle_manifest, resolver = load_precomputed_input(receipt.input_manifest_path)
+    window = prepared["videos"][0]["windows"][0]
+    base = resolver.load(prepared["videos"][0]["video_id"], window, "VLM")
+
+    mapped = semantic_score_to_evidence(base, score)
+
+    assert mapped["direction"] == pytest.approx(expected_direction)
+    assert mapped["q_in"] == pytest.approx(expected_quality)
+    assert len(mapped["atoms"]) == expected_atom_count
+    assert mapped["semantic_mapping_identity"] == MAPPING_IDENTITY
+    if mapped["atoms"]:
+        assert mapped["atoms"][0]["q_in"] == pytest.approx(expected_quality)
+        assert mapped["atoms"][0]["direction"] == pytest.approx(expected_direction)
+
+
+def test_semantic_score_manifest_is_complete_deterministic_hash_bound_and_label_free(tmp_path: Path) -> None:
+    receipt, _backends, _targets = _bundle(tmp_path)
+    first = precompute_semantic_scores(
+        input_manifest_path=receipt.input_manifest_path,
+        output_root=tmp_path / "semantic-a",
+        backend=FakeSemanticScoringBackend(),
+    )
+    second = precompute_semantic_scores(
+        input_manifest_path=receipt.input_manifest_path,
+        output_root=tmp_path / "semantic-b",
+        backend=FakeSemanticScoringBackend(),
+    )
+
+    assert first.manifest_sha256 == second.manifest_sha256
+    assert first.manifest_path.read_bytes() == second.manifest_path.read_bytes()
+    manifest = json.loads(first.manifest_path.read_bytes())
+    assert manifest["context_prompt"] == ORIGINAL_CONTEXT_PROMPT
+    assert manifest["format_prompt"] == ORIGINAL_FORMAT_PROMPT
+    assert manifest["mapping_identity"] == MAPPING_IDENTITY
+    assert manifest["score_count"] == 4
+    assert len(manifest["scores"]) == 4
+    assert b"label" not in first.manifest_path.read_bytes().lower()
+    resolver = load_semantic_score_manifest(
+        first.manifest_path,
+        expected_sha256=first.manifest_sha256,
+        input_manifest_path=receipt.input_manifest_path,
+    )
+    prepared, _bundle_manifest, evidence = load_precomputed_input(receipt.input_manifest_path)
+    video = prepared["videos"][0]
+    window = video["windows"][0]
+    base = evidence.load(video["video_id"], window, "VLM")
+    assert resolver.map_evidence(video["video_id"], window, base)["q_in"] == pytest.approx(0.8)
+
+    tampered = dict(manifest)
+    tampered["scores"] = [dict(item) for item in manifest["scores"]]
+    tampered["scores"][0]["anomaly_score"] = 0.2
+    first.manifest_path.write_bytes(dumps(tampered))
+    with pytest.raises(MvpFailure, match="MVP_FREEZE_INVALID"):
+        load_semantic_score_manifest(
+            first.manifest_path,
+            expected_sha256=first.manifest_sha256,
+            input_manifest_path=receipt.input_manifest_path,
+        )
+
+    incomplete_path = tmp_path / "incomplete-semantic.json"
+    incomplete = dict(manifest)
+    incomplete["scores"] = list(manifest["scores"][:-1])
+    incomplete["score_count"] = len(incomplete["scores"])
+    incomplete_path.write_bytes(dumps(incomplete))
+    with pytest.raises(MvpFailure, match="MVP_FREEZE_INVALID"):
+        load_semantic_score_manifest(
+            incomplete_path,
+            expected_sha256=file_sha256(incomplete_path),
+            input_manifest_path=receipt.input_manifest_path,
+        )
+
+    poisoned_path = tmp_path / "poisoned-semantic.json"
+    poisoned = dict(manifest)
+    poisoned["label"] = 1
+    poisoned_path.write_bytes(dumps(poisoned))
+    with pytest.raises(MvpFailure, match="MVP_GROUND_TRUTH_POISON"):
+        load_semantic_score_manifest(
+            poisoned_path,
+            expected_sha256=file_sha256(poisoned_path),
+            input_manifest_path=receipt.input_manifest_path,
+        )
+
+
+def test_tool_policy_none_is_zero_action_and_default_all_is_prediction_compatible(tmp_path: Path) -> None:
+    receipt, _backends, _targets = _bundle(tmp_path)
+
+    default_run = run_precomputed_inference(
+        attempt_id="mvp-tool-default-all",
+        project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path,
+        memory_enabled=False,
+    )
+    explicit_all = run_precomputed_inference(
+        attempt_id="mvp-tool-explicit-all",
+        project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path,
+        memory_enabled=False,
+        tool_policy="ALL",
+    )
+    disabled = run_precomputed_inference(
+        attempt_id="mvp-tool-none",
+        project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path,
+        memory_enabled=False,
+        tool_policy="NONE",
+    )
+
+    assert default_run["prediction_payload_hashes"] == explicit_all["prediction_payload_hashes"]
+    disabled_root = Path(disabled["output_attempt_root"]) / "inference"
+    assert (disabled_root / "traces" / "tool_trace.jsonl").read_bytes() == b""
+    disabled_plan = json.loads((disabled_root / "mvp_inference_plan.json").read_bytes())
+    assert disabled_plan["tool_policy"] == "NONE"
+    assert disabled_plan["tool_action_order"] == []
+    diagnostics = [
+        json.loads(line)
+        for line in (disabled_root / "diagnostics" / "window_diagnostics.jsonl").read_bytes().splitlines()
+    ]
+    assert all(item["accepted_actions"] == [] for item in diagnostics)
+
+
+def test_semantic_manifest_and_none_policy_cross_the_worker_and_formal_evaluator(tmp_path: Path) -> None:
+    receipt, _backends, _old_targets = _v1_bundle(tmp_path)
+    semantic = precompute_semantic_scores(
+        input_manifest_path=receipt.input_manifest_path,
+        output_root=tmp_path / "semantic-worker",
+        backend=FakeSemanticScoringBackend(),
+    )
+    target_path = tmp_path / "semantic-frame-targets.json"
+    target_path.write_text(
+        json.dumps(
+            {
+                "dataset_id": "mvp-real-assets-test",
+                "experiment_config_id": "I3",
+                "frame_interval": 16,
+                "manifest_type": "MVP_FRAME_TARGETS_V1",
+                "normal_label": 0,
+                "postprocess_identity": DIRECT_B4_POSTPROCESS,
+                "temporal_protocol": OFFLINE_PROTOCOL,
+                "videos": [
+                    {"anomaly_intervals": [], "frame_count": 32, "video_id": "mvp-video-real-reference"},
+                    {
+                        "anomaly_intervals": [{"end_frame": 31, "start_frame": 0}],
+                        "frame_count": 32,
+                        "video_id": "mvp-video-real-salient",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_asset_attempt(
+        attempt_id="mvp-semantic-worker-a",
+        project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path,
+        target_manifest_path=target_path,
+        memory_enabled=False,
+        tool_policy="NONE",
+        semantic_score_manifest_path=semantic.manifest_path,
+        semantic_score_manifest_sha256=semantic.manifest_sha256,
+    )
+
+    assert result["status_code"] == "EVALUATION_COMPLETED"
+    plan_path = tmp_path / "data" / "agentic_outputs" / "mvp" / "mvp-semantic-worker-a" / "inference" / "mvp_inference_plan.json"
+    plan = json.loads(plan_path.read_bytes())
+    assert plan["tool_policy"] == "NONE"
+    assert plan["semantic_score_manifest_sha256"] == semantic.manifest_sha256
+    assert plan["semantic_mapping_identity"] == MAPPING_IDENTITY
+    diagnostic_path = (
+        plan_path.parent
+        / "diagnostics"
+        / "windows"
+        / "mvp-video-real-reference"
+        / "mvp-video-real-reference-window-0000.json"
+    )
+    diagnostic = json.loads(diagnostic_path.read_bytes())
+    vlm_lineage = next(item for item in diagnostic["evidence_artifacts"] if item["action"] == "VLM")
+    assert vlm_lineage["relative_ref"] is None
 
 
 def test_model_assets_are_required_and_missing_assets_do_not_create_bundle(tmp_path: Path) -> None:
