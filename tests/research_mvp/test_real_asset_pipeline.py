@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import json
+import sys
+from types import ModuleType
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,6 +22,7 @@ from src.research_mvp.adapters.semantic_scores import (
     MAPPING_IDENTITY,
     ORIGINAL_CONTEXT_PROMPT,
     ORIGINAL_FORMAT_PROMPT,
+    TransformersSemanticScoringBackend,
     load_semantic_score_manifest,
     precompute_semantic_scores,
     semantic_score_to_evidence,
@@ -91,6 +94,65 @@ class FakeSemanticScoringBackend:
 
     def close(self) -> None:
         return None
+
+
+def test_transformers_semantic_backend_uses_eager_attention_for_left_padded_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    fake_torch = ModuleType("torch")
+    fake_torch.__version__ = "test"
+    fake_torch.bfloat16 = object()  # type: ignore[attr-defined]
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def empty_cache() -> None:
+            return None
+
+    fake_torch.cuda = FakeCuda()  # type: ignore[attr-defined]
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.__version__ = "test"
+
+    class FakeTokenizer:
+        pad_token_id = 0
+        padding_side = "right"
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(*_args: Any, **_kwargs: Any) -> FakeTokenizer:
+            return FakeTokenizer()
+
+    class FakeModel:
+        def eval(self) -> None:
+            return None
+
+    class FakeAutoModelForCausalLM:
+        @staticmethod
+        def from_pretrained(*_args: Any, **kwargs: Any) -> FakeModel:
+            captured.update(kwargs)
+            return FakeModel()
+
+    fake_transformers.AutoTokenizer = FakeAutoTokenizer  # type: ignore[attr-defined]
+    fake_transformers.AutoModelForCausalLM = FakeAutoModelForCausalLM  # type: ignore[attr-defined]
+    fake_transformers.set_seed = lambda _seed: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    (model_path / "config.json").write_text("{}", encoding="utf-8")
+
+    backend = TransformersSemanticScoringBackend(model_path, "0")
+    try:
+        assert captured["attn_implementation"] == "eager"
+        assert backend.provenance["attention_implementation"] == "eager"
+    finally:
+        backend.close()
 
 
 def _write_asset_inputs(tmp_path: Path) -> tuple[Path, Path, MvpRealModelConfig, Path]:

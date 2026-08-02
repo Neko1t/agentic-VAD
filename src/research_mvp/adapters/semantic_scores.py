@@ -36,6 +36,7 @@ SAMPLING_CONFIG = {
     "temperature": 0.6,
     "top_p": 0.9,
 }
+ATTENTION_IMPLEMENTATION = "eager"
 
 _SCORE = re.compile(r"\[(\d+(?:\.\d+)?)\]")
 _MANIFEST_FIELDS = {
@@ -442,6 +443,7 @@ class TransformersSemanticScoringBackend:
         set_seed(int(SAMPLING_CONFIG["seed"]))
         self._model = AutoModelForCausalLM.from_pretrained(
             model_path,
+            attn_implementation=ATTENTION_IMPLEMENTATION,
             device_map="auto",
             local_files_only=True,
             low_cpu_mem_usage=True,
@@ -450,6 +452,7 @@ class TransformersSemanticScoringBackend:
         )
         self._model.eval()
         self.provenance = {
+            "attention_implementation": ATTENTION_IMPLEMENTATION,
             "model_id": model_path.name,
             "model_files": list(_model_inventory(model_path)),
             "torch_version": str(torch.__version__),
