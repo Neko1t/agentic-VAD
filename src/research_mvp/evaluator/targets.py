@@ -32,10 +32,14 @@ def _read_source_manifest(path: Path) -> dict[str, Any]:
         "temporal_protocol",
         "videos",
     }
+    visual_only = isinstance(decoded, dict) and decoded.get("manifest_type") == "MVP_REAL_ASSET_SOURCE_V2"
+    if visual_only:
+        required.add("asset_profile")
     if (
         not isinstance(decoded, dict)
         or set(decoded) != required
-        or decoded.get("manifest_type") != "MVP_REAL_ASSET_SOURCE_V1"
+        or decoded.get("manifest_type") not in {"MVP_REAL_ASSET_SOURCE_V1", "MVP_REAL_ASSET_SOURCE_V2"}
+        or (visual_only and decoded.get("asset_profile") != "VISUAL_ONLY")
         or decoded.get("runtime_profile") != "RESEARCH_MVP"
         or decoded.get("decision_stride_frames") != 16
     ):

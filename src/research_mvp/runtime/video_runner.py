@@ -200,12 +200,14 @@ def _inference_plan(
             "source_assets": list(bundle["source_assets"]),
             "source_manifest_sha256": str(bundle["source_manifest_sha256"]),
         }
-    if fixture.get("manifest_type") == "MVP_PRECOMPUTED_INPUT_V1":
+    if fixture.get("manifest_type") in {"MVP_PRECOMPUTED_INPUT_V1", "MVP_PRECOMPUTED_INPUT_V2"}:
         plan["dataset_id"] = str(fixture["dataset_id"])
         plan["decision_point_count"] = int(fixture["decision_point_count"])
         plan["frame_interval"] = int(fixture["decision_stride_frames"])
         plan["frame_rate"] = dict(fixture["frame_rate"])
         plan["temporal_protocol"] = str(fixture["temporal_protocol"])
+    if fixture.get("manifest_type") == "MVP_PRECOMPUTED_INPUT_V2":
+        plan["asset_profile"] = str(fixture["asset_profile"])
     if semantic_score_manifest_sha256 is None:
         plan["base_evidence_mapper_identity"] = str(
             plan.get("precompute_provenance", {}).get("smoke_mapper_identity", "SYNTHETIC_BASE_EVIDENCE_V0")
@@ -344,6 +346,8 @@ def run_precomputed_inference(
 ) -> dict[str, Any]:
     validate_inference_environment()
     fixture, _bundle, evidence_resolver = load_precomputed_input(input_manifest_path)
+    if fixture.get("asset_profile") == "VISUAL_ONLY" and tool_policy != "NONE":
+        raise fatal("MVP_FREEZE_INVALID", "visual-only assets require explicit tool_policy NONE")
     if (semantic_score_manifest_path is None) != (semantic_score_manifest_sha256 is None):
         raise fatal("MVP_FREEZE_INVALID", "semantic score path and hash must be supplied together")
     semantic_score_resolver = (

@@ -16,14 +16,17 @@ from ..config import validate_inference_boundary
 from ..failures import MvpFailure, fatal
 from ..ids import validate_attempt_id, window_semantic_id
 from ..media import SOURCE_MANIFEST_TYPE as SOURCE_MANIFEST_TYPE_V1
-from ..media import TEMPORAL_PROTOCOLS, plan_video_windows
+from ..media import (ASSET_PROFILES, TEMPORAL_PROTOCOLS, VISUAL_ONLY, VISUAL_SOURCE_MANIFEST_TYPE,
+                     frame_boundary_us, plan_video_windows)
 
 
 SOURCE_MANIFEST_TYPE_V0 = "MVP_REAL_ASSET_SOURCE_V0"
 PRECOMPUTED_MANIFEST_TYPE_V0 = "MVP_PRECOMPUTED_INPUT_V0"
 PRECOMPUTED_MANIFEST_TYPE_V1 = "MVP_PRECOMPUTED_INPUT_V1"
+PRECOMPUTED_MANIFEST_TYPE_V2 = "MVP_PRECOMPUTED_INPUT_V2"
 ADAPTER_IDENTITY_V0 = "PRECOMPUTED_REAL_ASSET_EVIDENCE_MVP_V0"
 ADAPTER_IDENTITY_V1 = "PRECOMPUTED_REAL_ASSET_EVIDENCE_MVP_V1"
+ADAPTER_IDENTITY_V2 = "PRECOMPUTED_VISUAL_EVIDENCE_MVP_V2"
 SMOKE_MAPPER_IDENTITY = "MVP_SMOKE_TEXT_EVIDENCE_V0"
 
 _TOKEN = re.compile(r"[a-z0-9_]+")
@@ -62,8 +65,8 @@ _ACTION_FAMILY = {"VLM": "VISUAL", "OCR": "VISUAL", "AUDIO": "AUDIO"}
 @dataclass(frozen=True, slots=True)
 class MvpRealModelConfig:
     caption_model: Path
-    ocr_model: Path
-    audio_model: Path
+    ocr_model: Path | None
+    audio_model: Path | None
     embedding_model: Path
     gpu_device: str
     caption_max_frames: int = 10
@@ -72,15 +75,22 @@ class MvpRealModelConfig:
     caption_temperature: float = 0.0
     audio_compute_type: str = "float16"
     ocr_languages: tuple[str, ...] = ("en",)
+    asset_profile: str = "ALL"
+
+    @property
+    def model_fields(self) -> tuple[str, ...]:
+        return ("caption_model", "embedding_model") if self.asset_profile == VISUAL_ONLY else _MODEL_FIELDS
 
     def __post_init__(self) -> None:
+        if self.asset_profile not in ASSET_PROFILES:
+            raise ValueError("unregistered asset profile")
         if not isinstance(self.gpu_device, str) or not self.gpu_device.strip():
             raise ValueError("gpu_device must be explicit")
         if self.caption_max_frames <= 0 or self.caption_fps <= 0 or self.caption_max_new_tokens <= 0:
             raise ValueError("caption sampling parameters must be positive")
         if not math.isfinite(self.caption_temperature) or self.caption_temperature < 0.0:
             raise ValueError("caption_temperature must be finite and non-negative")
-        if not self.ocr_languages or any(not language for language in self.ocr_languages):
+        if self.asset_profile != VISUAL_ONLY and (not self.ocr_languages or any(not language for language in self.ocr_languages)):
             raise ValueError("at least one OCR language is required")
 
 
@@ -167,7 +177,8 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
     source = _read_object(source_manifest_path, "ASSET_NOT_RUN")
     validate_inference_boundary(source)
     manifest_type = source.get("manifest_type")
-    v1 = manifest_type == SOURCE_MANIFEST_TYPE_V1
+    visual_only = manifest_type == VISUAL_SOURCE_MANIFEST_TYPE
+    v1 = manifest_type in {SOURCE_MANIFEST_TYPE_V1, VISUAL_SOURCE_MANIFEST_TYPE}
     required_root = (
         {
             "dataset_id",
@@ -182,9 +193,13 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
         if v1
         else {"dataset_id", "manifest_type", "runtime_profile", "videos"}
     )
+    if visual_only:
+        required_root.add("asset_profile")
+        if source.get("asset_profile") != VISUAL_ONLY:
+            raise fatal("MVP_FREEZE_INVALID", "V2 source requires the visual-only profile")
     if set(source) != required_root:
         raise fatal("MVP_FREEZE_INVALID", "source manifest fields are not closed")
-    if manifest_type not in {SOURCE_MANIFEST_TYPE_V0, SOURCE_MANIFEST_TYPE_V1} or source["runtime_profile"] != RUNTIME_PROFILE:
+    if manifest_type not in {SOURCE_MANIFEST_TYPE_V0, SOURCE_MANIFEST_TYPE_V1, VISUAL_SOURCE_MANIFEST_TYPE} or source["runtime_profile"] != RUNTIME_PROFILE:
         raise fatal("MVP_FREEZE_INVALID", "source manifest profile is invalid")
     if not isinstance(source["dataset_id"], str) or not source["dataset_id"]:
         raise fatal("MVP_FREEZE_INVALID", "dataset identity is invalid")
@@ -265,6 +280,9 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
                         "evidence_start_us",
                     }
                 )
+            if visual_only:
+                required.remove("audio_ref")
+                required.update({"sampled_frame_indices", "sampled_frame_timestamps_us"})
             if not isinstance(window, dict) or set(window) != required:
                 raise fatal("MVP_FREEZE_INVALID", "source window fields are not closed")
             ordinal = window["ordinal"]
@@ -315,14 +333,35 @@ def load_asset_source_manifest(source_manifest_path: Path, asset_root: Path) -> 
                 raise fatal("ASSET_NOT_RUN", "source window has no frames")
             for frame_ref in frame_refs:
                 _require_file(asset_root, str(frame_ref))
-            _require_file(asset_root, str(window["audio_ref"]))
+            if visual_only:
+                _validate_sampled_frames(window, fps_num, fps_den)
+            else:
+                _require_file(asset_root, str(window["audio_ref"]))
     return source
+
+
+def _validate_sampled_frames(window: Mapping[str, Any], fps_num: int, fps_den: int) -> None:
+    indices = window.get("sampled_frame_indices")
+    times = window.get("sampled_frame_timestamps_us")
+    if (not isinstance(indices, list) or not indices
+        or any(isinstance(i, bool) or not isinstance(i, int) for i in indices)
+        or indices != sorted(set(indices))
+        or any(not window["evidence_start_frame"] <= i <= window["evidence_end_frame"] for i in indices)
+        or not isinstance(times, list)
+        or any(isinstance(t, bool) or not isinstance(t, int) for t in times)
+        or times != [frame_boundary_us(i, fps_num, fps_den) for i in indices]):
+        raise fatal("MVP_TIME_INVALID", "sampled visual frames and timestamps are invalid")
+    if "frame_refs" in window and len(window["frame_refs"]) != len(indices):
+        raise fatal("MVP_TIME_INVALID", "sampled visual frame references are incomplete")
 
 
 def _model_missing(config: MvpRealModelConfig) -> list[str]:
     missing: list[str] = []
-    for name in _MODEL_FIELDS:
+    for name in config.model_fields:
         path = getattr(config, name)
+        if path is None:
+            missing.append(name)
+            continue
         try:
             validate_path_identity(path)
         except MvpFailure:
@@ -341,6 +380,8 @@ def inspect_real_assets(
     source_ready = True
     try:
         source = load_asset_source_manifest(source_manifest_path, asset_root)
+        if source.get("asset_profile", "ALL") != model_config.asset_profile:
+            raise fatal("MVP_FREEZE_INVALID", "source and model asset profiles differ")
         video_count = len(source["videos"])
         window_count = sum(len(video["windows"]) for video in source["videos"])
     except MvpFailure as exc:
@@ -392,7 +433,7 @@ def _source_inventory(source: Mapping[str, Any], asset_root: Path) -> tuple[dict
         str(video["video_ref"])
         for video in source["videos"]
     }
-    refs.update(str(window["audio_ref"]) for video in source["videos"] for window in video["windows"])
+    refs.update(str(window["audio_ref"]) for video in source["videos"] for window in video["windows"] if "audio_ref" in window)
     refs.update(str(ref) for video in source["videos"] for window in video["windows"] for ref in window["frame_refs"])
     return tuple(
         {"relative_ref": relative, "sha256": file_sha256(_require_file(asset_root, relative))}
@@ -403,7 +444,7 @@ def _source_inventory(source: Mapping[str, Any], asset_root: Path) -> tuple[dict
 def _backend_window(video: Mapping[str, Any], window: Mapping[str, Any], asset_root: Path) -> dict[str, Any]:
     return {
         **dict(window),
-        "audio_path": str(_require_file(asset_root, str(window["audio_ref"]))),
+        "audio_path": str(_require_file(asset_root, str(window["audio_ref"]))) if "audio_ref" in window else None,
         "decision_end_frame": int(window["end_frame"]),
         "decision_end_us": int(window["end_us"]),
         "decision_start_frame": int(window["start_frame"]),
@@ -567,13 +608,14 @@ def precompute_asset_bundle(
     if bundle_root.exists() or bundle_root.is_symlink():
         raise fatal("MVP_IMMUTABLE_PUBLISH_FAILED", "asset bundle root must be fresh")
     source = load_asset_source_manifest(source_manifest_path, asset_root)
-    v1 = source["manifest_type"] == SOURCE_MANIFEST_TYPE_V1
-    adapter_identity = ADAPTER_IDENTITY_V1 if v1 else ADAPTER_IDENTITY_V0
-    precomputed_manifest_type = PRECOMPUTED_MANIFEST_TYPE_V1 if v1 else PRECOMPUTED_MANIFEST_TYPE_V0
+    visual_only = source["manifest_type"] == VISUAL_SOURCE_MANIFEST_TYPE
+    v1 = source["manifest_type"] in {SOURCE_MANIFEST_TYPE_V1, VISUAL_SOURCE_MANIFEST_TYPE}
+    adapter_identity = ADAPTER_IDENTITY_V2 if visual_only else ADAPTER_IDENTITY_V1 if v1 else ADAPTER_IDENTITY_V0
+    precomputed_manifest_type = PRECOMPUTED_MANIFEST_TYPE_V2 if visual_only else PRECOMPUTED_MANIFEST_TYPE_V1 if v1 else PRECOMPUTED_MANIFEST_TYPE_V0
     source_assets = _source_inventory(source, asset_root)
     model_files = tuple(
         record
-        for model_id in _MODEL_FIELDS
+        for model_id in model_config.model_fields
         for record in _inventory_tree(getattr(model_config, model_id), model_id)
     )
     backend = LocalRealBackends(model_config, asset_root) if backends is None else backends
@@ -582,9 +624,9 @@ def precompute_asset_bundle(
     for video in source["videos"]:
         for window in video["windows"]:
             prefix = f"{video['video_id']}/{window['window_id']}"
-            for action in ("caption", "ocr", "audio", "embedding"):
+            for action in (("caption", "embedding") if visual_only else ("caption", "ocr", "audio", "embedding")):
                 planned[f"raw:{prefix}:{action}"] = f"raw/{prefix}/{action}.json"
-            for action in ("vlm", "ocr", "audio"):
+            for action in (("vlm",) if visual_only else ("vlm", "ocr", "audio")):
                 planned[f"evidence:{prefix}:{action}"] = f"evidence/{prefix}/{action}.json"
     publisher = MvpImmutablePublisher(bundle_root, planned)
     raw_records: list[dict[str, Any]] = []
@@ -598,8 +640,9 @@ def precompute_asset_bundle(
                 prefix = f"{video['video_id']}/{window['window_id']}"
                 try:
                     caption_raw = _normalize_raw("CAPTION", backend.caption(backend_window))
-                    ocr_raw = _normalize_raw("OCR", backend.ocr(backend_window))
-                    audio_raw = _normalize_raw("AUDIO", backend.audio(backend_window))
+                    if not visual_only:
+                        ocr_raw = _normalize_raw("OCR", backend.ocr(backend_window))
+                        audio_raw = _normalize_raw("AUDIO", backend.audio(backend_window))
                     embedding_text = str(caption_raw["text"]).strip()
                     embedding_raw = _normalize_raw("EMBEDDING", backend.embedding(embedding_text, backend_window))
                 except MvpFailure:
@@ -608,10 +651,11 @@ def precompute_asset_bundle(
                     raise _safe_failure("ASSET_NOT_RUN", "real backend execution failed", exc) from exc
                 normalized_raw = {
                     "caption": caption_raw,
-                    "ocr": ocr_raw,
-                    "audio": audio_raw,
                     "embedding": embedding_raw,
                 }
+                if not visual_only:
+                    normalized_raw = {"caption": caption_raw, "ocr": ocr_raw, "audio": audio_raw,
+                                      "embedding": embedding_raw}
                 raw_by_action: dict[str, dict[str, Any]] = {}
                 for action, raw in normalized_raw.items():
                     target_id = f"raw:{prefix}:{action}"
@@ -622,9 +666,12 @@ def precompute_asset_bundle(
                 vector = tuple(float(value) for value in embedding_raw["vector"])
                 evidence_payloads = {
                     "VLM": _evidence_payload("VLM", str(video["video_id"]), window, caption_raw, vector),
-                    "OCR": _evidence_payload("OCR", str(video["video_id"]), window, ocr_raw, None),
-                    "AUDIO": _evidence_payload("AUDIO", str(video["video_id"]), window, audio_raw, None),
                 }
+                if not visual_only:
+                    evidence_payloads.update({
+                        "OCR": _evidence_payload("OCR", str(video["video_id"]), window, ocr_raw, None),
+                        "AUDIO": _evidence_payload("AUDIO", str(video["video_id"]), window, audio_raw, None),
+                    })
                 window_evidence: dict[str, dict[str, Any]] = {}
                 for action, evidence in evidence_payloads.items():
                     target_id = f"evidence:{prefix}:{action.casefold()}"
@@ -665,6 +712,9 @@ def precompute_asset_bundle(
                             "start_frame": int(window["start_frame"]),
                         }
                     )
+                if visual_only:
+                    prepared_window.update({key: list(window[key]) for key in
+                                            ("sampled_frame_indices", "sampled_frame_timestamps_us")})
                 prepared_windows.append(prepared_window)
             prepared_video = {"video_id": str(video["video_id"]), "windows": prepared_windows}
             if v1:
@@ -696,6 +746,8 @@ def precompute_asset_bundle(
         )
     else:
         prepared["static_max_case_count"] = sum(len(video["windows"]) for video in source["videos"])
+    if visual_only:
+        prepared["asset_profile"] = VISUAL_ONLY
     input_receipt = publisher.publish(
         "input",
         dumps(prepared),
@@ -711,6 +763,12 @@ def precompute_asset_bundle(
         "gpu_device": model_config.gpu_device,
         "ocr_languages": list(model_config.ocr_languages),
     }
+    if visual_only:
+        config_payload.pop("audio_compute_type")
+        config_payload.pop("ocr_languages")
+        config_payload["asset_profile"] = VISUAL_ONLY
+        config_payload["caption_input_mode"] = "VIDEO_PATH_PROCESSOR_SAMPLING"
+        config_payload["prepared_frame_metadata_role"] = "MEDIA_PREPARATION_ONLY"
     bundle_manifest = {
         "adapter_identity": adapter_identity,
         "backend_identity": str(backend.identity),
@@ -814,7 +872,8 @@ def load_precomputed_input(
     prepared = _read_object(input_manifest_path, "MVP_FREEZE_INVALID")
     validate_inference_boundary(prepared)
     manifest_type = prepared.get("manifest_type")
-    v1 = manifest_type == PRECOMPUTED_MANIFEST_TYPE_V1
+    visual_only = manifest_type == PRECOMPUTED_MANIFEST_TYPE_V2
+    v1 = manifest_type in {PRECOMPUTED_MANIFEST_TYPE_V1, PRECOMPUTED_MANIFEST_TYPE_V2}
     required = {
         "adapter_identity",
         "bundle_id",
@@ -836,14 +895,18 @@ def load_precomputed_input(
                 "temporal_protocol",
             }
         )
-        expected_adapter_identity = ADAPTER_IDENTITY_V1
+        expected_adapter_identity = ADAPTER_IDENTITY_V2 if visual_only else ADAPTER_IDENTITY_V1
     else:
         required.add("static_max_case_count")
         expected_adapter_identity = ADAPTER_IDENTITY_V0
+    if visual_only:
+        required.add("asset_profile")
+        if prepared.get("asset_profile") != VISUAL_ONLY:
+            raise fatal("MVP_FREEZE_INVALID", "V2 input requires the visual-only profile")
     if set(prepared) != required:
         raise fatal("MVP_FREEZE_INVALID", "precomputed input fields are not closed")
     if (
-        manifest_type not in {PRECOMPUTED_MANIFEST_TYPE_V0, PRECOMPUTED_MANIFEST_TYPE_V1}
+        manifest_type not in {PRECOMPUTED_MANIFEST_TYPE_V0, PRECOMPUTED_MANIFEST_TYPE_V1, PRECOMPUTED_MANIFEST_TYPE_V2}
         or prepared["adapter_identity"] != expected_adapter_identity
         or prepared["runtime_profile"] != RUNTIME_PROFILE
         or prepared["research_claim_status"] != RESEARCH_CLAIM_STATUS
@@ -852,6 +915,13 @@ def load_precomputed_input(
     bundle_root = input_manifest_path.parent
     bundle_path = resolve_relative(bundle_root, str(prepared["bundle_manifest_ref"]))
     bundle = _read_object(bundle_path, "MVP_FREEZE_INVALID")
+    if visual_only and (
+        bundle.get("model_config", {}).get("asset_profile") != VISUAL_ONLY
+        or {r.get("action") for r in bundle.get("raw_output_artifacts", ())} != {"CAPTION", "EMBEDDING"}
+        or {r.get("action") for r in bundle.get("evidence_artifacts", ())} != {"VLM"}
+        or {r.get("model_id") for r in bundle.get("model_files", ())} != {"caption_model", "embedding_model"}
+    ):
+        raise fatal("MVP_FREEZE_INVALID", "visual bundle contains inconsistent enabled assets")
     if bundle.get("bundle_id") != prepared["bundle_id"] or bundle.get("adapter_identity") != expected_adapter_identity:
         raise fatal("MVP_FREEZE_INVALID", "asset bundle identity is invalid")
     input_entry = bundle.get("input_manifest")
@@ -881,16 +951,40 @@ def load_precomputed_input(
     materialized = {key: value for key, value in prepared.items() if key != "videos"}
     videos: list[dict[str, Any]] = []
     decision_point_count = 0
+    seen_video_ids: set[str] = set()
     for video in prepared["videos"]:
         video_id = str(video["video_id"])
+        if visual_only and (set(video) != {"video_id", "frame_count", "windows"} or video_id in seen_video_ids):
+            raise fatal("MVP_FREEZE_INVALID", "visual video fields or identity are invalid")
+        seen_video_ids.add(video_id)
         frame_count = int(video["frame_count"]) if v1 else None
         if v1 and frame_count <= 0:
             raise fatal("MVP_TIME_INVALID", "precomputed frame count is invalid")
         windows: list[dict[str, Any]] = []
+        expected_grid = None
+        if visual_only:
+            expected_grid = plan_video_windows(video_id=video_id, frame_count=video["frame_count"],
+                fps_num=prepared["frame_rate"]["numerator"], fps_den=prepared["frame_rate"]["denominator"],
+                temporal_protocol=prepared["temporal_protocol"], decision_stride_frames=prepared["decision_stride_frames"],
+                evidence_context_frames=prepared["evidence_context_frames"])
+            if len(video["windows"]) != len(expected_grid):
+                raise fatal("MVP_WINDOW_ORDER_VIOLATION", "visual prediction grid is incomplete")
         for expected_ordinal, window in enumerate(video["windows"]):
+            if visual_only:
+                grid_fields = {"window_id", "ordinal", "start_frame", "end_frame", "start_us", "end_us", "delta_us",
+                               "evidence_start_frame", "evidence_end_frame", "evidence_start_us", "evidence_end_us"}
+                if set(window) != grid_fields | {"evidence_artifacts", "sampled_frame_indices", "sampled_frame_timestamps_us"}:
+                    raise fatal("MVP_FREEZE_INVALID", "visual window fields are not closed")
+                expected = expected_grid[expected_ordinal]
+                if any(window[key] != getattr(expected, key) or type(window[key]) is not type(getattr(expected, key))
+                       for key in grid_fields):
+                    raise fatal("MVP_WINDOW_ORDER_VIOLATION", "visual prediction grid is inconsistent")
             if int(window["ordinal"]) != expected_ordinal:
                 raise fatal("MVP_WINDOW_ORDER_VIOLATION", "precomputed windows are not ordered")
-            for action in ("VLM", "OCR", "AUDIO"):
+            actions = ("VLM",) if visual_only else ("VLM", "OCR", "AUDIO")
+            if set(window.get("evidence_artifacts", {})) != set(actions):
+                raise fatal("MVP_FREEZE_INVALID", "window actions do not match its asset profile")
+            for action in actions:
                 entry = window["evidence_artifacts"][action]
                 path = resolve_relative(bundle_root, str(entry["relative_ref"]))
                 if (
@@ -920,6 +1014,10 @@ def load_precomputed_input(
                         "start_frame": int(window["start_frame"]),
                     }
                 )
+            if visual_only:
+                _validate_sampled_frames(window, prepared["frame_rate"]["numerator"], prepared["frame_rate"]["denominator"])
+                materialized_window.update({key: list(window[key]) for key in
+                                            ("sampled_frame_indices", "sampled_frame_timestamps_us")})
             windows.append(materialized_window)
             decision_point_count += 1
         materialized_video = {"video_id": video_id, "windows": windows}
@@ -928,6 +1026,14 @@ def load_precomputed_input(
         videos.append(materialized_video)
     if v1 and decision_point_count != int(prepared["decision_point_count"]):
         raise fatal("MVP_WINDOW_ORDER_VIOLATION", "precomputed decision point count is invalid")
+    if visual_only:
+        expected_raw_ids = {f"raw:{v['video_id']}/{w['window_id']}:{action}" for v in prepared["videos"]
+                            for w in v["windows"] for action in ("caption", "embedding")}
+        expected_evidence_ids = {f"evidence:{v['video_id']}/{w['window_id']}:vlm" for v in prepared["videos"] for w in v["windows"]}
+        for registry, expected_ids in ((bundle["raw_output_artifacts"], expected_raw_ids),
+                                       (bundle["evidence_artifacts"], expected_evidence_ids)):
+            if len(registry) != len(expected_ids) or {r["artifact_id"] for r in registry} != expected_ids:
+                raise fatal("MVP_FREEZE_INVALID", "visual artifact registry is incomplete or duplicated")
     materialized["videos"] = videos
     materialized["asset_bundle_manifest_sha256"] = file_sha256(bundle_path)
     materialized["asset_bundle_manifest"] = bundle
@@ -966,8 +1072,8 @@ class LocalRealBackends:
                 start_time=float(int(window["start_us"]) / 1_000_000),
                 end_time=float(int(window["end_us"]) / 1_000_000),
             ),
-            frame_indices=list(range(int(window["start_frame"]), int(window["end_frame"]) + 1)),
-            audio_path=str(window["audio_path"]),
+            frame_indices=list(window.get("sampled_frame_indices", range(int(window["start_frame"]), int(window["end_frame"]) + 1))),
+            audio_path=window.get("audio_path"),
             frame_paths=[str(value) for value in window["frame_paths"]],
         )
 

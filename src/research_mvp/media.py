@@ -19,6 +19,9 @@ CAUSAL_PROTOCOL = "ZS-Independent-Causal"
 STREAM_CAUSAL_PROTOCOL = "ZS-Stream-Causal"
 TEMPORAL_PROTOCOLS = frozenset({OFFLINE_PROTOCOL, CAUSAL_PROTOCOL, STREAM_CAUSAL_PROTOCOL})
 SOURCE_MANIFEST_TYPE = "MVP_REAL_ASSET_SOURCE_V1"
+VISUAL_SOURCE_MANIFEST_TYPE = "MVP_REAL_ASSET_SOURCE_V2"
+VISUAL_ONLY = "VISUAL_ONLY"
+ASSET_PROFILES = ("ALL", VISUAL_ONLY)
 
 
 CommandRunner = Callable[[tuple[str, ...]], subprocess.CompletedProcess[bytes]]
@@ -67,8 +70,11 @@ class MediaPreparationConfig:
     audio_sample_rate: int = 16_000
     ffmpeg_executable: str = "ffmpeg"
     ffprobe_executable: str = "ffprobe"
+    asset_profile: str = "ALL"
 
     def __post_init__(self) -> None:
+        if self.asset_profile not in ASSET_PROFILES:
+            raise ValueError("unregistered asset profile")
         if not isinstance(self.dataset_id, str) or not self.dataset_id:
             raise ValueError("dataset_id must be non-empty")
         if self.temporal_protocol not in TEMPORAL_PROTOCOLS:
@@ -227,9 +233,12 @@ def _probe_video(
     runner: CommandRunner,
 ) -> tuple[int, int, int]:
     video = _probe_stream(video_path, "v:0", config.ffprobe_executable, runner)
-    audio = _probe_stream(video_path, "a:0", config.ffprobe_executable, runner)
-    if video.get("codec_type") != "video" or audio.get("codec_type") != "audio":
-        raise fatal("ASSET_NOT_RUN", "main video and audio streams are required")
+    if video.get("codec_type") != "video":
+        raise fatal("ASSET_NOT_RUN", "main video stream is required")
+    if config.asset_profile != VISUAL_ONLY:
+        audio = _probe_stream(video_path, "a:0", config.ffprobe_executable, runner)
+        if audio.get("codec_type") != "audio":
+            raise fatal("ASSET_NOT_RUN", "main audio stream is required")
     raw_count = video.get("nb_frames")
     if raw_count in {None, "", "N/A"}:
         raw_count = video.get("nb_read_frames")
@@ -283,7 +292,7 @@ def _seconds(microseconds: int) -> str:
 
 
 def _config_payload(config: MediaPreparationConfig) -> dict[str, Any]:
-    return {
+    result = {
         "audio_codec": "pcm_s16le",
         "audio_sample_rate": config.audio_sample_rate,
         "audio_channels": 1,
@@ -296,6 +305,11 @@ def _config_payload(config: MediaPreparationConfig) -> dict[str, Any]:
         "ffprobe_executable": config.ffprobe_executable,
         "temporal_protocol": config.temporal_protocol,
     }
+    if config.asset_profile == VISUAL_ONLY:
+        for key in ("audio_codec", "audio_sample_rate", "audio_channels"):
+            result.pop(key)
+        result["asset_profile"] = VISUAL_ONLY
+    return result
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:
@@ -380,6 +394,14 @@ def prepare_media_assets(
         / config.dataset_id
         / f"{config.temporal_protocol.casefold().replace('-', '_')}.json"
     )
+    media_root = asset_root
+    visual_only = config.asset_profile == VISUAL_ONLY
+    if visual_only:
+        # Hash-addressed outputs cannot overwrite legacy frames or another sampling configuration.
+        media_root = asset_root / "visual_media" / config_fingerprint / payload_hash(source_records)
+        cache_key = payload_hash({"config": config_fingerprint, "sources": source_records,
+                                  "source_manifest_ref": source_manifest_ref})
+        cache_path = asset_root / ".asset_status" / "media_visual" / f"{cache_key}.json"
     cached = _cache_matches(cache_path, asset_root, source_records, config_fingerprint)
     if cached is not None:
         manifest_path = asset_root / source_manifest_ref
@@ -423,7 +445,7 @@ def prepare_media_assets(
             for window in plan
         }
         unique_samples = tuple(sorted({index for values in samples_by_window.values() for index in values}))
-        frame_dir = asset_root / "frames" / video_id
+        frame_dir = media_root / "frames" / video_id
         frame_dir.mkdir(parents=True, exist_ok=True)
         frame_pattern = frame_dir / "%06d.jpg"
         select_filter = "select=" + "+".join(f"eq(n\\,{index})" for index in unique_samples)
@@ -460,39 +482,33 @@ def prepare_media_assets(
 
         windows: list[dict[str, Any]] = []
         for window in plan:
-            audio_path = asset_root / "audio" / video_id / f"{window.window_id}.wav"
-            audio_path.parent.mkdir(parents=True, exist_ok=True)
-            _run_checked(
-                (
-                    config.ffmpeg_executable,
-                    "-v",
-                    "error",
-                    "-nostdin",
-                    "-y",
-                    "-i",
-                    str(video_path),
-                    "-ss",
-                    _seconds(window.evidence_start_us),
-                    "-t",
-                    _seconds(window.evidence_end_us - window.evidence_start_us),
-                    "-map",
-                    "0:a:0",
-                    "-ac",
-                    "1",
-                    "-ar",
-                    str(config.audio_sample_rate),
-                    "-c:a",
-                    "pcm_s16le",
-                    str(audio_path),
-                ),
-                command_runner,
-            )
-            if not audio_path.is_file() or audio_path.is_symlink():
-                raise fatal("ASSET_NOT_RUN", "ffmpeg did not publish the requested evidence audio")
-            output_paths.append(audio_path)
+            modality_fields: dict[str, Any] = {}
+            if visual_only:
+                samples = samples_by_window[window.window_id]
+                modality_fields = {
+                    "sampled_frame_indices": list(samples),
+                    "sampled_frame_timestamps_us": [frame_boundary_us(i, fps_num, fps_den) for i in samples],
+                }
+            else:
+                audio_path = asset_root / "audio" / video_id / f"{window.window_id}.wav"
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                _run_checked(
+                    (
+                        config.ffmpeg_executable, "-v", "error", "-nostdin", "-y", "-i", str(video_path),
+                        "-ss", _seconds(window.evidence_start_us),
+                        "-t", _seconds(window.evidence_end_us - window.evidence_start_us),
+                        "-map", "0:a:0", "-ac", "1", "-ar", str(config.audio_sample_rate),
+                        "-c:a", "pcm_s16le", str(audio_path),
+                    ),
+                    command_runner,
+                )
+                if not audio_path.is_file() or audio_path.is_symlink():
+                    raise fatal("ASSET_NOT_RUN", "ffmpeg did not publish the requested evidence audio")
+                output_paths.append(audio_path)
+                modality_fields["audio_ref"] = audio_path.relative_to(asset_root).as_posix()
             windows.append(
                 {
-                    "audio_ref": audio_path.relative_to(asset_root).as_posix(),
+                    **modality_fields,
                     "delta_us": window.delta_us,
                     "end_frame": window.end_frame,
                     "end_us": window.end_us,
@@ -522,11 +538,13 @@ def prepare_media_assets(
         "decision_stride_frames": config.decision_stride_frames,
         "evidence_context_frames": config.evidence_context_frames,
         "frame_rate": {"denominator": common_rate[1], "numerator": common_rate[0]},
-        "manifest_type": SOURCE_MANIFEST_TYPE,
+        "manifest_type": VISUAL_SOURCE_MANIFEST_TYPE if visual_only else SOURCE_MANIFEST_TYPE,
         "runtime_profile": RUNTIME_PROFILE,
         "temporal_protocol": config.temporal_protocol,
         "videos": manifest_videos,
     }
+    if visual_only:
+        source_manifest["asset_profile"] = VISUAL_ONLY
     _publish_last(source_manifest_path, dumps(source_manifest))
     output_paths.append(source_manifest_path)
     outputs = [

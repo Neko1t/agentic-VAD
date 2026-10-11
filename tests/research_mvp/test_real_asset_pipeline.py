@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+from dataclasses import replace
 from types import ModuleType
 from pathlib import Path
 from typing import Any, Mapping
@@ -38,6 +39,136 @@ from src.research_mvp.runtime.video_runner import run_precomputed_inference
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _visual_bundle(tmp_path: Path):
+    asset_root, source_path, config, _ = _write_asset_inputs(tmp_path)
+    _upgrade_source_to_v1(source_path)
+    source = json.loads(source_path.read_bytes())
+    source.update(manifest_type="MVP_REAL_ASSET_SOURCE_V2", asset_profile="VISUAL_ONLY")
+    for video in source["videos"]:
+        for window in video["windows"]:
+            window.pop("audio_ref")
+            window["sampled_frame_indices"] = [0]
+            window["sampled_frame_timestamps_us"] = [0]
+    source_path.write_bytes(dumps(source))
+    config = replace(config, ocr_model=None, audio_model=None, asset_profile="VISUAL_ONLY")
+    backend = FakeRealBackends()
+    assert inspect_real_assets(source_path, asset_root, config)["status_code"] == "ASSET_READY"
+    receipt = precompute_asset_bundle(bundle_id="mvp-visual-bundle", source_manifest_path=source_path,
+        asset_root=asset_root, bundle_root=tmp_path / "visual-bundle", model_config=config, backends=backend)
+    return receipt, backend, source_path
+
+
+def test_visual_bundle_is_explicit_and_executes_only_caption_embedding(tmp_path: Path) -> None:
+    receipt, backend, _ = _visual_bundle(tmp_path)
+    assert {action for action, _ in backend.calls} == {"CAPTION", "EMBEDDING"}
+    assert all(window.get("audio_path") is None for window in backend.backend_windows)
+    prepared, bundle, _ = load_precomputed_input(receipt.input_manifest_path)
+    assert prepared["manifest_type"] == "MVP_PRECOMPUTED_INPUT_V2"
+    assert prepared["asset_profile"] == "VISUAL_ONLY"
+    assert {row["model_id"] for row in bundle["model_files"]} == {"caption_model", "embedding_model"}
+    assert {row["action"] for row in bundle["raw_output_artifacts"]} == {"CAPTION", "EMBEDDING"}
+    assert all(set(w["evidence_artifacts"]) == {"VLM"} for v in prepared["videos"] for w in v["windows"])
+    assert prepared["videos"][0]["windows"][0]["sampled_frame_indices"] == [0]
+
+
+def test_visual_bundle_requires_tools_none_before_creating_attempt(tmp_path: Path) -> None:
+    receipt, _, _ = _visual_bundle(tmp_path)
+    with pytest.raises(MvpFailure, match="MVP_FREEZE_INVALID"):
+        run_precomputed_inference(attempt_id="mvp-visual-invalid", project_root=tmp_path,
+            input_manifest_path=receipt.input_manifest_path, memory_enabled=False, tool_policy="ALL")
+    assert not (tmp_path / "data/agentic_outputs/mvp/mvp-visual-invalid").exists()
+
+
+def test_visual_pipeline_crosses_workers_and_formal_evaluator(tmp_path: Path) -> None:
+    from src.research_mvp.evaluator.targets import build_ucf_frame_target_manifest
+
+    receipt, _, source_path = _visual_bundle(tmp_path)
+    annotation = tmp_path / "annotations.txt"
+    annotation.write_text("mvp-video-real-reference.mp4 Normal -1 -1\n"
+                          "mvp-video-real-salient.mp4 Fight 16 31\n", encoding="utf-8")
+    target_path = tmp_path / "frame-targets.json"
+    build_ucf_frame_target_manifest(source_manifest_path=source_path, temporal_annotation_path=annotation,
+        output_path=target_path, experiment_config_id="I3")
+    semantic = precompute_semantic_scores(input_manifest_path=receipt.input_manifest_path,
+        output_root=tmp_path / "semantic", backend=FakeSemanticScoringBackend())
+    result = run_asset_attempt(attempt_id="mvp-visual-end-to-end", project_root=tmp_path,
+        input_manifest_path=receipt.input_manifest_path, target_manifest_path=target_path,
+        memory_enabled=False, tool_policy="NONE", semantic_score_manifest_path=semantic.manifest_path,
+        semantic_score_manifest_sha256=semantic.manifest_sha256)
+    assert result["status_code"] == "EVALUATION_COMPLETED"
+    verified = verify_frozen_attempt(tmp_path, "mvp-visual-end-to-end", inference_quiescent=True)
+    assert verified["plan"]["asset_profile"] == "VISUAL_ONLY"
+    assert verified["plan"]["frame_interval"] == 16
+    assert (verified["inference_root"] / "traces/tool_trace.jsonl").read_bytes() == b""
+
+
+@pytest.mark.parametrize("change", ["extra_audio", "missing_raw", "duplicate_raw", "bad_sample", "bad_grid"])
+def test_visual_loader_rejects_inconsistent_bundle_even_with_rebound_hashes(tmp_path: Path, change: str) -> None:
+    from src.research_mvp.codec import payload_hash
+
+    receipt, _, _ = _visual_bundle(tmp_path)
+    prepared = json.loads(receipt.input_manifest_path.read_bytes())
+    bundle = json.loads(receipt.bundle_manifest_path.read_bytes())
+    window = prepared["videos"][0]["windows"][0]
+    if change == "extra_audio":
+        window["evidence_artifacts"]["AUDIO"] = window["evidence_artifacts"]["VLM"]
+    elif change == "missing_raw":
+        bundle["raw_output_artifacts"].pop()
+    elif change == "duplicate_raw":
+        bundle["raw_output_artifacts"].append(bundle["raw_output_artifacts"][0])
+    elif change == "bad_sample":
+        window["sampled_frame_timestamps_us"] = [999]
+    else:
+        window["end_frame"] = 14
+    receipt.input_manifest_path.write_bytes(dumps(prepared))
+    bundle["input_manifest"].update(sha256=file_sha256(receipt.input_manifest_path), payload_hash=payload_hash(prepared),
+                                     byte_length=receipt.input_manifest_path.stat().st_size)
+    receipt.bundle_manifest_path.write_bytes(dumps(bundle))
+    with pytest.raises(MvpFailure):
+        load_precomputed_input(receipt.input_manifest_path)
+
+
+def test_visual_source_rejects_profile_mismatch_and_extra_audio(tmp_path: Path) -> None:
+    receipt, _, source_path = _visual_bundle(tmp_path)
+    asset_root = tmp_path / "assets"
+    source = json.loads(source_path.read_bytes())
+    config = MvpRealModelConfig(caption_model=tmp_path / "models/caption", embedding_model=tmp_path / "models/embedding",
+                               ocr_model=None, audio_model=None, gpu_device="cpu")
+    with pytest.raises(MvpFailure, match="MVP_FREEZE_INVALID"):
+        inspect_real_assets(source_path, asset_root, config)
+    source["videos"][0]["windows"][0]["audio_ref"] = "audio/unused.wav"
+    source_path.write_bytes(dumps(source))
+    with pytest.raises(MvpFailure, match="MVP_FREEZE_INVALID"):
+        load_asset_source_manifest(source_path, asset_root)
+
+
+def test_visual_local_caption_adapter_does_not_require_audio(tmp_path: Path) -> None:
+    from src.research_mvp.adapters.real_assets import LocalRealBackends
+
+    _, fake, _ = _visual_bundle(tmp_path)
+    config = MvpRealModelConfig(caption_model=tmp_path / "models/caption", embedding_model=tmp_path / "models/embedding",
+                               ocr_model=None, audio_model=None, gpu_device="cpu", asset_profile="VISUAL_ONLY")
+    backend = LocalRealBackends(config, tmp_path / "assets")
+    window = backend._window_input(fake.backend_windows[0])
+    assert window.audio_path is None
+    assert window.frame_indices == [0]
+    assert backend._ocr_reader is None and backend._audio_model is None
+
+
+def test_visual_asset_cli_propagates_profile(tmp_path: Path, monkeypatch, capsys) -> None:
+    import src.research_mvp.cli as cli
+
+    captured = {}
+    def inspect(source, root, config):
+        captured["config"] = config
+        return {"status_code": "ASSET_READY"}
+    monkeypatch.setattr(cli, "inspect_real_assets", inspect)
+    assert cli.main(["inspect-real-assets", "--source-manifest", str(tmp_path / "source.json"),
+                     "--asset-root", str(tmp_path), "--gpu-device", "0", "--asset-profile", "VISUAL_ONLY"]) == 0
+    assert captured["config"].asset_profile == "VISUAL_ONLY"
+    assert captured["config"].audio_model is None and captured["config"].ocr_model is None
 
 
 class FakeRealBackends:

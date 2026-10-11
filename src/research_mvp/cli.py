@@ -10,6 +10,7 @@ from .adapters.semantic_scores import TransformersSemanticScoringBackend, precom
 from .failures import MvpFailure
 from .launcher import compare_frozen_attempts
 from .media import (
+    ASSET_PROFILES,
     MediaPreparationConfig,
     MediaPreparationReceipt,
     TEMPORAL_PROTOCOLS,
@@ -18,6 +19,7 @@ from .media import (
 
 
 def _add_real_asset_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--asset-profile", choices=ASSET_PROFILES, default="ALL")
     parser.add_argument("--source-manifest", required=True)
     parser.add_argument("--asset-root", required=True)
     parser.add_argument("--caption-model", default="libs/videollama3/VideoLLaMA3-7B")
@@ -30,10 +32,11 @@ def _add_real_asset_arguments(parser: argparse.ArgumentParser) -> None:
 def _real_model_config(args: argparse.Namespace) -> MvpRealModelConfig:
     return MvpRealModelConfig(
         caption_model=Path(args.caption_model),
-        ocr_model=Path(args.ocr_model),
-        audio_model=Path(args.audio_model),
+        ocr_model=None if args.asset_profile == "VISUAL_ONLY" else Path(args.ocr_model),
+        audio_model=None if args.asset_profile == "VISUAL_ONLY" else Path(args.audio_model),
         embedding_model=Path(args.embedding_model),
         gpu_device=str(args.gpu_device),
+        asset_profile=args.asset_profile,
     )
 
 
@@ -50,6 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser = subparsers.add_parser("compare-frozen")
     compare_parser.add_argument("--left", required=True)
     compare_parser.add_argument("--right", required=True)
+    visual_parser = subparsers.add_parser("compare-visual", help="Post-freeze V0/V1/V2 same-input comparison")
+    visual_parser.add_argument("--project-root", default=".")
+    visual_parser.add_argument("--attempt-id", required=True)
+    visual_parser.add_argument("--input-manifest", required=True)
+    visual_parser.add_argument("--semantic-score-manifest", required=True)
+    visual_parser.add_argument("--semantic-score-manifest-sha256", required=True)
+    visual_parser.add_argument("--target-manifest", required=True)
+    visual_parser.add_argument("--output-root", required=True)
     inspect_parser = subparsers.add_parser("inspect-real-assets")
     _add_real_asset_arguments(inspect_parser)
     precompute_parser = subparsers.add_parser("precompute-real-assets")
@@ -63,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     semantic_parser.add_argument("--gpu-device", required=True)
     semantic_parser.add_argument("--batch-size", type=int, choices=(32,), default=32)
     media_parser = subparsers.add_parser("prepare-real-media")
+    media_parser.add_argument("--asset-profile", choices=ASSET_PROFILES, default="ALL")
     media_parser.add_argument("--video-dir", required=True)
     media_parser.add_argument("--asset-root", required=True)
     media_parser.add_argument("--source-manifest", required=True)
@@ -78,6 +90,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "compare-frozen":
             result = compare_frozen_attempts(Path.cwd(), args.left, args.right)
+        elif args.command == "compare-visual":
+            from .visual_comparison import compare_visual_attempt
+
+            result = compare_visual_attempt(project_root=Path(args.project_root), attempt_id=args.attempt_id,
+                input_manifest_path=Path(args.input_manifest), semantic_score_manifest_path=Path(args.semantic_score_manifest),
+                semantic_score_manifest_sha256=args.semantic_score_manifest_sha256,
+                target_manifest_path=Path(args.target_manifest), output_root=Path(args.output_root))
         elif args.command == "prepare-real-media":
             video_dir = Path(args.video_dir)
             videos = tuple(
@@ -100,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                     caption_max_frames=args.caption_max_frames,
                     ffmpeg_executable=args.ffmpeg,
                     ffprobe_executable=args.ffprobe,
+                    asset_profile=args.asset_profile,
                 ),
             )
             result = {
@@ -158,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
     except MvpFailure as exc:
         print(json.dumps({"failure_code": exc.code, "severity": exc.severity}, separators=(",", ":")))
         return 3 if exc.code == "ASSET_NOT_RUN" else 2
+    except (ValueError, OSError, KeyError, TypeError):
+        if args.command != "compare-visual":
+            raise
+        print(json.dumps({"failure_code": "VISUAL_COMPARISON_INVALID_INPUT"}, separators=(",", ":")))
+        return 2
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

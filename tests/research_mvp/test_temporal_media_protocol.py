@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 import src.research_mvp.cli as mvp_cli
 from src.research_mvp.media import (
@@ -13,6 +16,52 @@ from src.research_mvp.media import (
     plan_video_windows,
     prepare_media_assets,
 )
+
+
+def test_visual_media_never_probes_or_extracts_audio_and_reuses_exact_cache(tmp_path: Path) -> None:
+    class SilentCommands(FakeMediaCommands):
+        def __call__(self, command):
+            assert "a:0" not in command and "0:a:0" not in command
+            return super().__call__(command)
+
+    root = tmp_path / "assets"
+    root.mkdir()
+    video = root / "silent.mp4"
+    video.write_bytes(b"silent")
+    config = MediaPreparationConfig(dataset_id="visual-mini", temporal_protocol=OFFLINE_PROTOCOL,
+                                    asset_profile="VISUAL_ONLY")
+    runner = SilentCommands()
+    kwargs = dict(videos=(("mvp-video-silent", video),), asset_root=root,
+                  source_manifest_path=root / "visual.json", config=config, command_runner=runner)
+    first = prepare_media_assets(**kwargs)
+    source = json.loads(first.source_manifest_path.read_bytes())
+    assert source["manifest_type"] == "MVP_REAL_ASSET_SOURCE_V2"
+    assert source["asset_profile"] == "VISUAL_ONLY"
+    windows = source["videos"][0]["windows"]
+    assert windows[-1]["end_frame"] == 32
+    for window in windows:
+        assert "audio_ref" not in window
+        assert len(window["sampled_frame_indices"]) == len(window["frame_refs"])
+        assert window["sampled_frame_timestamps_us"] == [
+            frame_boundary_us(i, 30, 1) for i in window["sampled_frame_indices"]
+        ]
+    assert not (root / "audio").exists()
+    count = len(runner.commands)
+    assert prepare_media_assets(**kwargs).cache_hit
+    assert len(runner.commands) == count
+    old_frame = root / windows[0]["frame_refs"][0]
+    old_bytes = old_frame.read_bytes()
+    other = prepare_media_assets(**{**kwargs, "source_manifest_path": root / "other.json",
+                                    "config": replace(config, caption_max_frames=1)})
+    assert not other.cache_hit
+    assert old_frame.read_bytes() == old_bytes
+    changed = json.loads(other.source_manifest_path.read_bytes())
+    assert changed["videos"][0]["windows"][0]["frame_refs"] != windows[0]["frame_refs"]
+
+
+def test_media_rejects_unknown_profile() -> None:
+    with pytest.raises(ValueError):
+        MediaPreparationConfig(dataset_id="mini", temporal_protocol=OFFLINE_PROTOCOL, asset_profile="AUDIO_ONLY")
 
 
 MINI_VIDEO_FRAME_COUNTS = {
