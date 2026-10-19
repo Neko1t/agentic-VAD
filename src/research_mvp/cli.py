@@ -73,6 +73,17 @@ def main(argv: list[str] | None = None) -> int:
     semantic_parser.add_argument("--model-path", required=True)
     semantic_parser.add_argument("--gpu-device", required=True)
     semantic_parser.add_argument("--batch-size", type=int, choices=(32,), default=32)
+    dynamic_parser = subparsers.add_parser(
+        "precompute-dynamic-video-events",
+        help="Freeze Qwen2.5-VL dynamic video event observations for a precomputed MVP input manifest",
+    )
+    dynamic_parser.add_argument("--input-manifest", required=True)
+    dynamic_parser.add_argument("--source-manifest", required=True)
+    dynamic_parser.add_argument("--asset-root", required=True)
+    dynamic_parser.add_argument("--output-root", required=True)
+    dynamic_parser.add_argument("--model-path", required=True)
+    dynamic_parser.add_argument("--gpu-device", required=True)
+    dynamic_parser.add_argument("--max-new-tokens", type=int, default=768)
     media_parser = subparsers.add_parser("prepare-real-media")
     media_parser.add_argument("--asset-profile", choices=ASSET_PROFILES, default="ALL")
     media_parser.add_argument("--video-dir", required=True)
@@ -152,6 +163,27 @@ def main(argv: list[str] | None = None) -> int:
                 "manifest_path": str(receipt.manifest_path.resolve()),
                 "manifest_sha256": receipt.manifest_sha256,
                 "score_count": receipt.score_count,
+                "status_code": receipt.status_code,
+            }
+        elif args.command == "precompute-dynamic-video-events":
+            from .adapters.qwen25vl_dynamic_video import Qwen25VLDynamicVideoBackend, precompute_dynamic_video_events
+
+            receipt = precompute_dynamic_video_events(
+                input_manifest_path=Path(args.input_manifest),
+                source_manifest_path=Path(args.source_manifest),
+                asset_root=Path(args.asset_root),
+                output_root=Path(args.output_root),
+                backend=Qwen25VLDynamicVideoBackend(
+                    Path(args.model_path),
+                    str(args.gpu_device),
+                    max_new_tokens=int(args.max_new_tokens),
+                ),
+            )
+            result = {
+                "manifest_path": str(receipt.manifest_path.resolve()),
+                "manifest_sha256": receipt.manifest_sha256,
+                "observation_count": receipt.observation_count,
+                "parse_success_count": receipt.parse_success_count,
                 "status_code": receipt.status_code,
             }
         else:
